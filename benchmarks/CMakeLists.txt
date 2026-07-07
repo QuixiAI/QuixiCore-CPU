@@ -12,9 +12,12 @@ add_executable(quixicore_cpu_bench
   harness/report.cpp
   harness/timing.cpp
   cases/mem_triad.cpp
+  cases/qgemv.cpp
   cases/sgemv_naive.cpp
 )
 target_link_libraries(quixicore_cpu_bench PRIVATE QuixiCoreCPU::quixicore_cpu)
+target_include_directories(quixicore_cpu_bench
+  PRIVATE ${QuixiCoreCPU_SOURCE_DIR})  # kernel-internal headers for cases
 # Emit at the build root (plus per-config subdir on multi-config generators)
 # so the binary lands in a predictable place for scripts/bench and users.
 set_target_properties(quixicore_cpu_bench PROPERTIES

@@ -1,8 +1,8 @@
 # Optimization Status
 
-No CPU kernel optimization runs have been recorded yet. The log currently
-contains benchmark-harness bring-up evidence only, which implements no kernel
-and makes no performance claim.
+Running notebook of focused optimization runs on CPU kernel paths. Every
+kernel implementation, routing change, benchmark change, or performance
+claim must add an entry here.
 
 Every future kernel implementation, routing change, benchmark change, or
 performance claim must add a focused optimization entry here.
@@ -23,7 +23,53 @@ performance claim must add a focused optimization entry here.
 
 | Date | Kernel | Dtype / Format | Shape Set | Target | Baseline | Candidate | Decision | Evidence |
 |---|---|---|---|---|---:|---:|---|---|
+| 2026-07-07 | quant_gemv | q8_0 | quant_matmul m=1 (4096x4096, 8192x8192, 16384x4096) | aarch64 baseline flags | 4.319 ms | 4.441 ms | reject multi-acc candidate; keep plain loop as ref | `perf/results/2026-07-07/022305-quick/` |
 | 2026-07-07 | harness (system probes) | f32 | mem_triad ladder + quant_matmul m=1 | aarch64 baseline flags | n/a | n/a | harness validated; no kernel, no speedup claim | `perf/results/2026-07-07/021238-quick/` |
+
+## 2026-07-07: quant_gemv q8_0 scalar reference bring-up
+
+Status: landed.
+Current implementation: `kernels/quantization/qgemv_ref.cpp`
+(`q8_0_gemv_ref`): plain per-block loop, f32 accumulation, single
+accumulator, scale applied once per 32-element block. GGUF-compatible
+`q8_0` packing (`34` bytes / 32 weights, fp16 scale + int8).
+Current public route: `quixicore_cpu::quant_gemv(QuantFormat::kQ8_0, ...)`
+via `src/dispatch/quant_gemv.cpp` (variant `ref`; env override
+`QUIXICORE_CPU_QGEMV_VARIANT`).
+References inspected: llama.cpp q8_0 block layout and quantization
+semantics; QuixiCore-Metal qgemv bench conventions.
+Correctness: `tests/correctness/test_quant_gemv.cpp` — fp16 roundtrip,
+argument validation, pack/unpack bound (< 1% of amax), float64 oracles
+(vs dequantized weights < 1e-4; vs original weights < 3e-2 = umbrella
+quantized tolerance), bit-exact determinism. In-harness oracle max rel err
+2.4e-07 - 2.6e-07 on the measured shapes.
+Baseline: plain single-accumulator loop (shipped as `ref`).
+Experiments: candidate = manual 4-way multi-accumulator split (hypothesis:
+f32 accumulation chain is latency-bound like `sgemv_naive`). Result: the
+candidate measured 1-3% SLOWER on every shape — Apple clang already
+auto-vectorizes the plain int8→f32 loop, and the manual split obstructs it.
+Decision: reject the multi-accumulator candidate; keep the plain loop as
+the reference. The rejected variant is preserved as the `scalar_multiacc`
+bench baseline for reproducibility.
+Open questions: NEON/dotprod variant is the obvious next step — the ref
+runs at ~4.1 weight-GB/s against a ~115 GB/s single-thread DRAM roofline
+(mem_triad, same machine), ~28x headroom.
+Raw results: `perf/results/2026-07-07/022305-quick/` (git-ignored; table
+below). Earlier A/B with candidate as target:
+`perf/results/2026-07-07/022143-quick/`.
+
+- Hardware: Apple M4 Max, 16 logical cores (12P+4E), 128 GB; macOS 26.5.1.
+- Toolchain: Apple Clang 21.0.0 (clang-2100.1.1.101), CMake Release,
+  baseline arch flags.
+- Command: `scripts/bench --preset quick --kernel qgemv` (warmup 3,
+  iters 20, min_sample_ms 2.0, threads 1).
+- Working-tree label: `cb47aff-dirty`.
+
+| shape (m=1) | ref ms | CV | vs scalar_multiacc | vs dequant_sgemv | W-GB/s | GFLOP/s | rel err | decision |
+|---|---:|---:|---:|---:|---:|---:|---|---|
+| N4096 K4096 | 4.3189 | 0.014 | 1.03x | 3.05x | 4.1 | 7.8 | 2.39e-07 | keep plain loop |
+| N8192 K8192 | 17.2801 | 0.022 | 1.01x | 3.09x | 4.1 | 7.8 | 2.55e-07 | keep plain loop |
+| N16384 K4096 | 17.1908 | 0.011 | 1.03x | 3.08x | 4.1 | 7.8 | 2.39e-07 | keep plain loop |
 
 ## 2026-07-07: Benchmark harness bring-up (system probes only)
 

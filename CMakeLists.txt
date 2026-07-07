@@ -20,9 +20,11 @@ option(QUIXICORE_CPU_BUILD_BENCHMARKS "Build QuixiCore CPU benchmark harness" ON
 # cmake/QuixiCoreCPUFeatures.cmake and kernels/README.md.
 add_library(quixicore_cpu STATIC
   src/backend.cpp
+  src/dispatch/quant_gemv.cpp
   src/runtime/cpu_features.cpp
   src/runtime/cpu_features_x86_64.cpp
   src/runtime/cpu_features_aarch64.cpp
+  kernels/quantization/qgemv_ref.cpp
 )
 add_library(QuixiCoreCPU::quixicore_cpu ALIAS quixicore_cpu)
 
@@ -32,6 +34,8 @@ target_include_directories(
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}  # kernel-internal headers (kernels/...)
 )
 
 if(MSVC)
@@ -57,6 +61,12 @@ if(QUIXICORE_CPU_BUILD_TESTS)
   add_executable(test_cpu_features tests/unit/test_cpu_features.cpp)
   target_link_libraries(test_cpu_features PRIVATE QuixiCoreCPU::quixicore_cpu)
   add_test(NAME cpu_features COMMAND test_cpu_features)
+
+  add_executable(test_quant_gemv tests/correctness/test_quant_gemv.cpp)
+  target_link_libraries(test_quant_gemv PRIVATE QuixiCoreCPU::quixicore_cpu)
+  target_include_directories(test_quant_gemv
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # kernel-internal headers
+  add_test(NAME quant_gemv COMMAND test_quant_gemv)
 
   if(QUIXICORE_CPU_BUILD_TOOLS)
     add_test(NAME cpu_info_tool COMMAND quixicore_cpu_info)

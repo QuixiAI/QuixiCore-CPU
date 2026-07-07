@@ -1,7 +1,5 @@
 # Baseline Status
 
-No CPU kernel baselines have been recorded yet.
-
 This file tracks accepted baseline measurements for supported or in-progress CPU
 kernel paths. A baseline is required before reporting a speedup or updating
 backend coverage status.
@@ -19,5 +17,7 @@ not contract kernels:
 
 | Date | Kernel | Dtype / Format | Shape Set | Target | Command | Median | Min / Max or Variance | Artifact | Notes |
 |---|---|---|---|---|---|---:|---|---|---|
-| TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | No baselines yet. |
+| 2026-07-07 | quant_gemv (`ref`) | q8_0 | quant_matmul m=1 N4096 K4096 | Apple M4 Max, 1 thread, baseline flags | `scripts/bench --preset quick --kernel qgemv` | 4.3189 ms | CV 0.014 | `perf/results/2026-07-07/022305-quick/` | scalar reference; in-progress, not claimed supported |
+| 2026-07-07 | quant_gemv (`ref`) | q8_0 | quant_matmul m=1 N8192 K8192 | Apple M4 Max, 1 thread, baseline flags | `scripts/bench --preset quick --kernel qgemv` | 17.2801 ms | CV 0.022 | `perf/results/2026-07-07/022305-quick/` | scalar reference; in-progress, not claimed supported |
+| 2026-07-07 | quant_gemv (`ref`) | q8_0 | quant_matmul m=1 N16384 K4096 | Apple M4 Max, 1 thread, baseline flags | `scripts/bench --preset quick --kernel qgemv` | 17.1908 ms | CV 0.011 | `perf/results/2026-07-07/022305-quick/` | scalar reference; in-progress, not claimed supported |
 
