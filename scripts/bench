@@ -1,0 +1,16 @@
+#!/usr/bin/env sh
+# Convenience wrapper for the QuixiCore CPU benchmark harness.
+# Override the build directory with QUIXICORE_CPU_BUILD_DIR.
+set -eu
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+build=${QUIXICORE_CPU_BUILD_DIR:-"$root/build"}
+exe="$build/quixicore_cpu_bench"
+if [ ! -x "$exe" ]; then
+  exe="$build/Release/quixicore_cpu_bench.exe"
+fi
+if [ ! -x "$exe" ]; then
+  echo "quixicore_cpu_bench not found under $build; build first:" >&2
+  echo "  cmake -S \"$root\" -B \"$build\" -DCMAKE_BUILD_TYPE=Release && cmake --build \"$build\"" >&2
+  exit 1
+fi
+exec "$exe" "$@"

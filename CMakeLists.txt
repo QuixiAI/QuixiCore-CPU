@@ -12,6 +12,7 @@ include(QuixiCoreCPUFeatures)
 
 option(QUIXICORE_CPU_BUILD_TESTS "Build QuixiCore CPU tests" ON)
 option(QUIXICORE_CPU_BUILD_TOOLS "Build QuixiCore CPU command-line tools" ON)
+option(QUIXICORE_CPU_BUILD_BENCHMARKS "Build QuixiCore CPU benchmark harness" ON)
 
 # Baseline sources build with no ISA-specific flags so one binary per
 # architecture runs on any CPU of that architecture. ISA kernel variants are
@@ -60,4 +61,8 @@ if(QUIXICORE_CPU_BUILD_TESTS)
   if(QUIXICORE_CPU_BUILD_TOOLS)
     add_test(NAME cpu_info_tool COMMAND quixicore_cpu_info)
   endif()
+endif()
+
+if(QUIXICORE_CPU_BUILD_BENCHMARKS)
+  add_subdirectory(benchmarks)
 endif()

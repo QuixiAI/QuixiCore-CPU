@@ -39,7 +39,8 @@ tests/
   unit/                     Component tests (feature detection, utils).
   correctness/              Contract correctness vs specs and tolerances.
   testdata/                 Small deterministic fixtures.
-benchmarks/                 Benchmark harness placeholder.
+benchmarks/                 Native benchmark harness (quixicore_cpu_bench).
+scripts/                    Convenience wrappers (scripts/bench).
 perf/                       Performance guide and evidence logs.
 docs/                       CPU backend design notes (see architecture.md).
 plan.md                     Original vision notes for the backend.
