@@ -20,7 +20,7 @@ option(QUIXICORE_CPU_BUILD_BENCHMARKS "Build QuixiCore CPU benchmark harness" ON
 # cmake/QuixiCoreCPUFeatures.cmake and kernels/README.md.
 add_library(quixicore_cpu STATIC
   src/backend.cpp
-  src/dispatch/quant_gemv.cpp
+  src/dispatch/qgemv.cpp
   src/dispatch/rms_norm.cpp
   src/runtime/cpu_features.cpp
   src/runtime/cpu_features_x86_64.cpp
@@ -29,6 +29,7 @@ add_library(quixicore_cpu STATIC
   kernels/norms/rms_norm_ref.cpp
   kernels/norms/rms_norm_neon.cpp
   kernels/quantization/qgemv_ref.cpp
+  kernels/quantization/qgemv_neon.cpp
 )
 add_library(QuixiCoreCPU::quixicore_cpu ALIAS quixicore_cpu)
 
@@ -73,15 +74,15 @@ if(QUIXICORE_CPU_BUILD_TESTS)
   target_link_libraries(test_cpu_features PRIVATE QuixiCoreCPU::quixicore_cpu)
   add_test(NAME cpu_features COMMAND test_cpu_features)
 
-  add_executable(test_quant_gemv tests/correctness/test_quant_gemv.cpp)
-  target_link_libraries(test_quant_gemv PRIVATE QuixiCoreCPU::quixicore_cpu)
-  target_include_directories(test_quant_gemv
+  add_executable(test_qgemv tests/correctness/test_qgemv.cpp)
+  target_link_libraries(test_qgemv PRIVATE QuixiCoreCPU::quixicore_cpu)
+  target_include_directories(test_qgemv
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # kernel-internal headers
   if(QUIXICORE_CPU_ISA_DOTPROD_SUPPORTED)
-    target_compile_definitions(test_quant_gemv
+    target_compile_definitions(test_qgemv
       PRIVATE QUIXICORE_CPU_HAVE_QGEMV_DOTPROD=1)
   endif()
-  add_test(NAME quant_gemv COMMAND test_quant_gemv)
+  add_test(NAME qgemv COMMAND test_qgemv)
 
   add_executable(test_rms_norm tests/correctness/test_rms_norm.cpp)
   target_link_libraries(test_rms_norm PRIVATE QuixiCoreCPU::quixicore_cpu)

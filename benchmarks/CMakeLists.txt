@@ -19,6 +19,10 @@ add_executable(quixicore_cpu_bench
 target_link_libraries(quixicore_cpu_bench PRIVATE QuixiCoreCPU::quixicore_cpu)
 target_include_directories(quixicore_cpu_bench
   PRIVATE ${QuixiCoreCPU_SOURCE_DIR})  # kernel-internal headers for cases
+if(QUIXICORE_CPU_ISA_DOTPROD_SUPPORTED)
+  target_compile_definitions(quixicore_cpu_bench
+    PRIVATE QUIXICORE_CPU_HAVE_QGEMV_DOTPROD=1)
+endif()
 # Emit at the build root (plus per-config subdir on multi-config generators)
 # so the binary lands in a predictable place for scripts/bench and users.
 set_target_properties(quixicore_cpu_bench PROPERTIES

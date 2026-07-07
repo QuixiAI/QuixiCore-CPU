@@ -23,10 +23,67 @@ performance claim must add a focused optimization entry here.
 
 | Date | Kernel | Dtype / Format | Shape Set | Target | Baseline | Candidate | Decision | Evidence |
 |---|---|---|---|---|---:|---:|---|---|
+| 2026-07-07 | qgemv (contract realignment) | q8_0 | quant_matmul m=1 (4096x4096, 8192x8192, 16384x4096) | aarch64 NEON f32-act | 4.127 ms | 1.034 ms | keep neon as contract default (4.0x over ref, family numerics); dotprod_i8 demoted to env-only | `perf/results/2026-07-07/033244-quick/` |
 | 2026-07-07 | quant_gemv + rms_norm (threading) | q8_0 / f32 | quant_matmul m=1 + R512 stress | aarch64, 8-12 threads | 0.303 ms | 0.068 ms | keep row-partitioned threading (4.3-4.5x, saturates aggregate DRAM BW) | `perf/results/2026-07-07/0307{23,45,51}-quick/` |
 | 2026-07-07 | rms_norm | f32 | decode_small (R1-R4, H2048/H4096) + R512 stress | aarch64 NEON | 2.26 us | 0.52 us | keep neon variant (4.3-4.6x over ref) | `perf/results/2026-07-07/024347-quick/` |
 | 2026-07-07 | quant_gemv | q8_0 | quant_matmul m=1 (4096x4096, 8192x8192, 16384x4096) | aarch64 NEON DotProd | 4.314 ms | 0.301 ms | keep dotprod variant (14.4x, 51% of DRAM roofline) | `perf/results/2026-07-07/023619-quick/` |
 | 2026-07-07 | quant_gemv | q8_0 | quant_matmul m=1 (4096x4096, 8192x8192, 16384x4096) | aarch64 baseline flags | 4.319 ms | 4.441 ms | reject multi-acc candidate; keep plain loop as ref | `perf/results/2026-07-07/022305-quick/` |
+
+## 2026-07-07: qgemv contract realignment with Metal/CUDA
+
+Status: landed.
+Current implementation: cross-backend review (QuixiCore-Metal
+`dequant.metal` + `tk/quant.py`, QuixiCore-CUDA `quant_formats.cuh`) showed
+the family `qgemv` contract is `out = dequantize(wq) @ x` with
+full-precision activations and f32 accumulation; activation-quantized
+integer math is a separate `qgemv_w8a8` op in both siblings. The CPU
+backend had made its activation-quantizing dotprod path the default —
+contract-divergent numerics at the public boundary. Realigned:
+- Public API renamed `quant_gemv*` -> `qgemv*` (family op naming; the
+  umbrella family key `quant_gemv` is the registry label, not the op).
+- New `kernels/quantization/qgemv_neon.cpp` ("neon"): int8 weights widened
+  to f32 in registers, FMA against f32 activations, per-block scale — the
+  contract numerics, now the aarch64 default.
+- The SDOT path renamed `dotprod_i8`, excluded from auto-selection
+  (`QUIXICORE_CPU_QGEMV_VARIANT=dotprod_i8` only); it previews a future
+  `qgemv_w8a8` twin op with family-matching per-token scales.
+- `rms_norm` verified formula-identical to both siblings (eps inside sqrt
+  on mean(x^2), multiplicative weight); default eps=1e-5 added. q8_0
+  block bytes verified identical to Metal/CUDA (34 B, fp16 scale, RNE).
+Current public route: `quixicore_cpu::qgemv(...)`; resolves `neon` on
+aarch64, `ref` elsewhere.
+References inspected: QuixiCore-Metal `qgemv.metal`/`qgemv.cpp`/`quant.py`;
+QuixiCore-CUDA `qgemv.cu`/`quant_formats.cuh`/`quant_rt.cu`.
+Correctness: `tests/correctness/test_qgemv.cpp` — the public entry now
+meets the family oracle (float64 dequantize(wq) @ x) at < 1e-4 on every
+platform (measured 1.4e-08 - 2.9e-08 in-harness); dotprod_i8 keeps its own
+quantized-activation oracle; public==dispatched-variant bit-exact. 7/7
+suites green.
+Baseline: `ref` scalar (same build).
+Experiments: single candidate (neon f32-activation structure). Result:
+3.95-4.02x over ref; 17 W-GB/s single-thread. The dotprod_i8 baseline
+remains ~3.5x faster (0.29 ms vs 1.03 ms at 4096^2) — that speed is
+intentionally not reachable via default dispatch until it ships under the
+family's `qgemv_w8a8` semantics.
+Decision: keep neon as the contract default. Accepting the default-path
+slowdown buys cross-backend numerical parity: one oracle, one contract,
+six backends.
+Open questions: `qgemv_w8a8` twin op (per-token activation scales, RNE,
+matching Metal/CUDA); i8mm for qgemm; quant.py byte-parity fixtures as
+shared test vectors.
+Raw results: `perf/results/2026-07-07/033244-quick/`.
+
+- Hardware: Apple M4 Max, 16 logical cores (12P+4E), 128 GB; macOS 26.5.1.
+- Toolchain: Apple Clang 21.0.0 (clang-2100.1.1.101), CMake Release,
+  baseline arch flags (NEON is aarch64 baseline).
+- Command: `scripts/bench --preset quick --kernel qgemv --threads 1`.
+- Working-tree label: `96b2c37-dirty`.
+
+| shape (m=1) | neon ms | CV | vs ref | vs dotprod_i8 | W-GB/s | rel err (family oracle) | decision |
+|---|---:|---:|---:|---:|---:|---|---|
+| N4096 K4096 | 1.0344 | 0.027 | 3.99x | 0.28x | 17.2 | 2.92e-08 | keep as contract default |
+| N8192 K8192 | 4.1164 | 0.022 | 4.02x | 0.29x | 17.3 | 1.43e-08 | keep as contract default |
+| N16384 K4096 | 4.2517 | 0.016 | 3.95x | 0.28x | 16.8 | 2.92e-08 | keep as contract default |
 
 ## 2026-07-07: Threading layer — row-partitioned kernels on a fork-join pool
 

@@ -9,7 +9,7 @@
 #include "kernels/common/fp16.h"
 #include "src/threading/thread_pool.h"
 
-namespace quixicore_cpu::qgemv {
+namespace quixicore_cpu::quant {
 
 void q8_0_pack_ref(const float* weights, long long n, long long k,
                    BlockQ8_0* packed) {
@@ -87,4 +87,4 @@ void q8_0_gemv_ref(const BlockQ8_0* packed, const float* x, float* y,
   });
 }
 
-}  // namespace quixicore_cpu::qgemv
+}  // namespace quixicore_cpu::quant

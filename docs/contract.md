@@ -30,3 +30,23 @@ CPU-specific implementation choices such as packing, ISA dispatch, thread
 partitioning, NUMA policy, or fused epilogues must remain invisible at the
 contract boundary unless documented as explicit CPU extensions.
 
+## De-Facto Family Semantics
+
+The umbrella kernel specs are stubs at contract v0.1, so the implemented
+sibling backends (Metal, CUDA) define de-facto operation semantics. The CPU
+backend follows them (verified 2026-07-07 against QuixiCore-Metal
+`dequant.metal`/`tk/quant.py` and QuixiCore-CUDA `quant_formats.cuh`):
+
+- `qgemv`: `out = dequantize(wq) @ x`, full-precision activations (f32 on
+  CPU; Metal/CUDA use fp16), f32 accumulation. Quant block layouts are
+  llama.cpp/GGUF byte-compatible (`q8_0` = 34 bytes: fp16 scale + 32 int8,
+  round-to-nearest-even packing). Activation-quantized integer math is a
+  separate op (`qgemv_w8a8` in the siblings; planned here) — never the
+  default `qgemv` path.
+- `rms_norm`: `y = x * rsqrt(mean(x^2) + eps) * weight`, eps inside the
+  sqrt, fp32 (or better) accumulation, multiplicative weight, no bias,
+  default `eps = 1e-5`.
+- Op naming follows the siblings (`qgemv`, `qgemm`, `rms_norm`,
+  `softmax`, fused `_add` suffixes); the umbrella registry family keys
+  (`quant_gemv`, ...) are labels, not op names.
+

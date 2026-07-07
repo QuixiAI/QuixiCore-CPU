@@ -8,7 +8,7 @@
 #include <iostream>
 #include <vector>
 
-#include "quixicore_cpu/quant_gemv.h"
+#include "quixicore_cpu/qgemv.h"
 #include "quixicore_cpu/rms_norm.h"
 #include "quixicore_cpu/threading.h"
 #include "src/threading/thread_pool.h"
@@ -96,7 +96,7 @@ int main() {
     REQUIRE(inner_ran);
   }
 
-  // Bit-exactness across thread counts: quant_gemv q8_0.
+  // Bit-exactness across thread counts: qgemv q8_0.
   {
     const long long n = 257;
     const long long k = 1024;
@@ -110,20 +110,20 @@ int main() {
       v = rng.next();
     }
     size_t size = 0;
-    REQUIRE(quixicore_cpu::quant_gemv_packed_size(QuantFormat::kQ8_0, n, k,
+    REQUIRE(quixicore_cpu::qgemv_packed_size(QuantFormat::kQ8_0, n, k,
                                                   &size) == Status::kOk);
     std::vector<uint8_t> packed(size);
-    REQUIRE(quixicore_cpu::quant_gemv_pack(QuantFormat::kQ8_0, w.data(), n, k,
+    REQUIRE(quixicore_cpu::qgemv_pack(QuantFormat::kQ8_0, w.data(), n, k,
                                            packed.data()) == Status::kOk);
 
     std::vector<float> y1(static_cast<size_t>(n));
     std::vector<float> y4(static_cast<size_t>(n));
     quixicore_cpu::set_num_threads(1);
-    REQUIRE(quixicore_cpu::quant_gemv(QuantFormat::kQ8_0, packed.data(),
+    REQUIRE(quixicore_cpu::qgemv(QuantFormat::kQ8_0, packed.data(),
                                       x.data(), y1.data(), n, k) ==
             Status::kOk);
     quixicore_cpu::set_num_threads(4);
-    REQUIRE(quixicore_cpu::quant_gemv(QuantFormat::kQ8_0, packed.data(),
+    REQUIRE(quixicore_cpu::qgemv(QuantFormat::kQ8_0, packed.data(),
                                       x.data(), y4.data(), n, k) ==
             Status::kOk);
     REQUIRE(std::memcmp(y1.data(), y4.data(), n * sizeof(float)) == 0);

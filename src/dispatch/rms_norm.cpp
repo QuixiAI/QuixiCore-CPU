@@ -1,5 +1,5 @@
 // Public rms_norm entry point and runtime variant dispatch. Same pattern
-// as quant_gemv: variants slowest-first, last supported wins, env override
+// as qgemv: variants slowest-first, last supported wins, env override
 // QUIXICORE_CPU_RMS_NORM_VARIANT for A/B runs.
 
 #include "quixicore_cpu/rms_norm.h"

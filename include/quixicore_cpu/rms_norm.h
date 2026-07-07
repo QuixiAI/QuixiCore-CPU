@@ -10,7 +10,7 @@ namespace quixicore_cpu {
 // process from runtime CPU features; set QUIXICORE_CPU_RMS_NORM_VARIANT to
 // force a named variant for testing and benchmarking.
 Status rms_norm(const float* x, const float* weight, float* y, long long rows,
-                long long hidden, float eps);
+                long long hidden, float eps = 1e-5f);  // family default eps
 
 // Name of the variant rms_norm resolves to ("ref", "neon", ...).
 const char* rms_norm_variant();

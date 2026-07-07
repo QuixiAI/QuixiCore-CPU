@@ -1,5 +1,5 @@
-// qgemv: quantized GEMV (GGUF q8_0) through the public quant_gemv entry
-// point — the first contract-kernel benchmark case.
+// qgemv: quantized GEMV (GGUF q8_0) through the public qgemv entry point —
+// family contract out = dequantize(wq) @ x, f32 activations.
 //
 // Baselines per the three-baseline rule (perf/perf.md):
 //   ref_scalar      — the library's scalar reference called directly (the
@@ -8,12 +8,16 @@
 //                     2026-07-07 optimization run (2-3% slower than the
 //                     auto-vectorized plain loop); kept here so the A/B
 //                     stays reproducible,
-//   dequant_sgemv   — naive decomposed path: unpack to f32, then scalar GEMV.
+//   dequant_sgemv   — naive decomposed path: unpack to f32, then scalar GEMV,
+//   dotprod_i8      — the activation-quantizing int8 SDOT path (env-forced
+//                     only in dispatch; contract-divergent numerics). Kept
+//                     as a baseline so the speed of the future qgemv_w8a8
+//                     twin op stays visible.
 // The roofline comparison is weight_gbps vs mem_triad DRAM bandwidth.
 //
-// The in-harness oracle uses f32 activations; variants that quantize
-// activations (dotprod) legitimately report rel err around 1e-3 here. The
-// tight per-variant oracles live in tests/correctness/test_quant_gemv.cpp.
+// The in-harness oracle is the family oracle (dequantized weights x f32
+// activations); the contract path should report ~1e-7 here. Per-variant
+// oracles live in tests/correctness/test_qgemv.cpp.
 //
 // Shape provenance: umbrella quant_matmul family at m = 1 (decode), plus
 // 2048 from decode_small hidden sizes.
@@ -31,15 +35,16 @@
 #include "harness/shapes.h"
 #include "kernels/common/fp16.h"
 #include "kernels/quantization/qgemv.h"
-#include "quixicore_cpu/quant_gemv.h"
+#include "quixicore_cpu/cpu_features.h"
+#include "quixicore_cpu/qgemv.h"
 
 namespace qcb {
 namespace {
 
 using quixicore_cpu::QuantFormat;
 using quixicore_cpu::Status;
-using quixicore_cpu::qgemv::BlockQ8_0;
-using quixicore_cpu::qgemv::kQ8_0BlockSize;
+using quixicore_cpu::quant::BlockQ8_0;
+using quixicore_cpu::quant::kQ8_0BlockSize;
 
 class Rng {
  public:
@@ -105,8 +110,8 @@ CaseDecl make_qgemv_decl(long long n, long long k) {
   decl.shape = {{"m", 1}, {"n", n}, {"k", k}};
   decl.dtype = "f32";
   decl.format = "q8_0";
-  decl.notes = std::string("public quant_gemv, variant ") +
-               quixicore_cpu::quant_gemv_variant(QuantFormat::kQ8_0);
+  decl.notes = std::string("public qgemv, variant ") +
+               quixicore_cpu::qgemv_variant(QuantFormat::kQ8_0);
   decl.flops = 2.0 * static_cast<double>(n) * static_cast<double>(k);
   const double weight_bytes = static_cast<double>(n) *
                               static_cast<double>(k / kQ8_0BlockSize) *
@@ -115,9 +120,9 @@ CaseDecl make_qgemv_decl(long long n, long long k) {
   decl.bytes_moved = weight_bytes + 4.0 * static_cast<double>(n + k);
   decl.make = [n, k]() {
     size_t packed_size = 0;
-    if (quixicore_cpu::quant_gemv_packed_size(QuantFormat::kQ8_0, n, k,
+    if (quixicore_cpu::qgemv_packed_size(QuantFormat::kQ8_0, n, k,
                                               &packed_size) != Status::kOk) {
-      throw std::runtime_error("quant_gemv_packed_size failed");
+      throw std::runtime_error("qgemv_packed_size failed");
     }
 
     auto bufs = std::make_shared<Buffers>();
@@ -137,10 +142,10 @@ CaseDecl make_qgemv_decl(long long n, long long k) {
       for (long long i = 0; i < n * k; ++i) {
         weights.get()[i] = rng.next();
       }
-      if (quixicore_cpu::quant_gemv_pack(QuantFormat::kQ8_0, weights.get(), n,
+      if (quixicore_cpu::qgemv_pack(QuantFormat::kQ8_0, weights.get(), n,
                                          k, bufs->packed.get()) !=
           Status::kOk) {
-        throw std::runtime_error("quant_gemv_pack failed");
+        throw std::runtime_error("qgemv_pack failed");
       }
     }
     Rng rng_x;
@@ -156,15 +161,15 @@ CaseDecl make_qgemv_decl(long long n, long long k) {
 
     CaseBody body;
     body.target = [bufs]() {
-      if (quixicore_cpu::quant_gemv(QuantFormat::kQ8_0, bufs->packed.get(),
+      if (quixicore_cpu::qgemv(QuantFormat::kQ8_0, bufs->packed.get(),
                                     bufs->x.get(), bufs->y.get(), bufs->n,
                                     bufs->k) != Status::kOk) {
-        throw std::runtime_error("quant_gemv failed");
+        throw std::runtime_error("qgemv failed");
       }
       do_not_optimize(bufs->y.get());
     };
     body.baselines.emplace_back("ref_scalar", [bufs]() {
-      quixicore_cpu::qgemv::q8_0_gemv_ref(
+      quixicore_cpu::quant::q8_0_gemv_ref(
           reinterpret_cast<const BlockQ8_0*>(bufs->packed.get()),
           bufs->x.get(), bufs->y.get(), bufs->n, bufs->k);
       do_not_optimize(bufs->y.get());
@@ -175,12 +180,22 @@ CaseDecl make_qgemv_decl(long long n, long long k) {
           bufs->x.get(), bufs->y.get(), bufs->n, bufs->k);
       do_not_optimize(bufs->y.get());
     });
+#if defined(QUIXICORE_CPU_HAVE_QGEMV_DOTPROD)
+    if (quixicore_cpu::cpu_features().dotprod) {
+      body.baselines.emplace_back("dotprod_i8", [bufs]() {
+        quixicore_cpu::quant::q8_0_gemv_dotprod(
+            reinterpret_cast<const BlockQ8_0*>(bufs->packed.get()),
+            bufs->x.get(), bufs->y.get(), bufs->n, bufs->k);
+        do_not_optimize(bufs->y.get());
+      });
+    }
+#endif
     body.baselines.emplace_back("dequant_sgemv", [bufs]() {
-      if (quixicore_cpu::quant_gemv_unpack(QuantFormat::kQ8_0,
+      if (quixicore_cpu::qgemv_unpack(QuantFormat::kQ8_0,
                                            bufs->packed.get(), bufs->n,
                                            bufs->k, bufs->scratch.get()) !=
           Status::kOk) {
-        throw std::runtime_error("quant_gemv_unpack failed");
+        throw std::runtime_error("qgemv_unpack failed");
       }
       const float* w = bufs->scratch.get();
       const float* x = bufs->x.get();
@@ -196,16 +211,16 @@ CaseDecl make_qgemv_decl(long long n, long long k) {
       do_not_optimize(y);
     });
     body.check = [bufs]() {
-      if (quixicore_cpu::quant_gemv(QuantFormat::kQ8_0, bufs->packed.get(),
+      if (quixicore_cpu::qgemv(QuantFormat::kQ8_0, bufs->packed.get(),
                                     bufs->x.get(), bufs->y.get(), bufs->n,
                                     bufs->k) != Status::kOk) {
-        throw std::runtime_error("quant_gemv failed");
+        throw std::runtime_error("qgemv failed");
       }
-      if (quixicore_cpu::quant_gemv_unpack(QuantFormat::kQ8_0,
+      if (quixicore_cpu::qgemv_unpack(QuantFormat::kQ8_0,
                                            bufs->packed.get(), bufs->n,
                                            bufs->k, bufs->scratch.get()) !=
           Status::kOk) {
-        throw std::runtime_error("quant_gemv_unpack failed");
+        throw std::runtime_error("qgemv_unpack failed");
       }
       const float* dq = bufs->scratch.get();
       const float* x = bufs->x.get();

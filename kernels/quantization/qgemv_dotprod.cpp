@@ -1,15 +1,20 @@
-// AArch64 DotProd (SDOT) variant of q8_0 GEMV.
+// AArch64 DotProd (SDOT) variant of q8_0 GEMV — the "dotprod_i8" variant.
 //
 // Activations are quantized to int8 blocks once per call (d = amax/127,
 // round-to-nearest), then each 32-element block is two vdotq_s32 int8x16
 // dot products accumulated as float32x4 lanes with the combined
 // weight*activation scale (the llama.cpp q8_0 x q8_0 structure). The int
 // dot is exact; activation quantization adds bounded error well inside the
-// umbrella quantized tolerance (see tests/correctness/test_quant_gemv.cpp).
+// umbrella quantized tolerance (see tests/correctness/test_qgemv.cpp).
+//
+// NOTE: activation quantization diverges from the family qgemv contract
+// (dequantize(wq) @ x with full-precision activations), so dispatch never
+// auto-selects this variant — QUIXICORE_CPU_QGEMV_VARIANT=dotprod_i8 only.
+// It previews the future qgemv_w8a8 twin op the sibling backends expose.
 //
 // This file is added to the build only when the toolchain can target
 // dotprod (cmake/QuixiCoreCPUFeatures.cmake) and is called only after
-// runtime detection confirms the feature (src/dispatch/quant_gemv.cpp).
+// runtime detection confirms the feature (src/dispatch/qgemv.cpp).
 
 #if (defined(__aarch64__) || defined(_M_ARM64)) && \
     defined(QUIXICORE_CPU_ISA_DOTPROD)
@@ -24,7 +29,7 @@
 #include "kernels/quantization/qgemv.h"
 #include "src/threading/thread_pool.h"
 
-namespace quixicore_cpu::qgemv {
+namespace quixicore_cpu::quant {
 namespace {
 
 inline float block_scale(uint16_t d) {
@@ -122,6 +127,6 @@ void q8_0_gemv_dotprod(const BlockQ8_0* packed, const float* x, float* y,
   });
 }
 
-}  // namespace quixicore_cpu::qgemv
+}  // namespace quixicore_cpu::quant
 
 #endif  // aarch64 && QUIXICORE_CPU_ISA_DOTPROD
