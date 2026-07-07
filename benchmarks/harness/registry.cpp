@@ -6,6 +6,7 @@ namespace qcb {
 void build_mem_triad_cases(const BuildCtx&, std::vector<CaseDecl>&);
 void build_sgemv_naive_cases(const BuildCtx&, std::vector<CaseDecl>&);
 void build_qgemv_cases(const BuildCtx&, std::vector<CaseDecl>&);
+void build_rms_norm_cases(const BuildCtx&, std::vector<CaseDecl>&);
 
 // Explicit table instead of static-initializer self-registration: no
 // init-order or dead-stripping hazards, and --list ordering is stable.
@@ -14,6 +15,7 @@ const std::vector<KernelEntry>& kernel_registry() {
       {"mem_triad", &build_mem_triad_cases},
       {"sgemv_naive", &build_sgemv_naive_cases},
       {"qgemv", &build_qgemv_cases},
+      {"rms_norm", &build_rms_norm_cases},
   };
   return registry;
 }

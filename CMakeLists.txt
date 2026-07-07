@@ -21,9 +21,12 @@ option(QUIXICORE_CPU_BUILD_BENCHMARKS "Build QuixiCore CPU benchmark harness" ON
 add_library(quixicore_cpu STATIC
   src/backend.cpp
   src/dispatch/quant_gemv.cpp
+  src/dispatch/rms_norm.cpp
   src/runtime/cpu_features.cpp
   src/runtime/cpu_features_x86_64.cpp
   src/runtime/cpu_features_aarch64.cpp
+  kernels/norms/rms_norm_ref.cpp
+  kernels/norms/rms_norm_neon.cpp
   kernels/quantization/qgemv_ref.cpp
 )
 add_library(QuixiCoreCPU::quixicore_cpu ALIAS quixicore_cpu)
@@ -78,6 +81,12 @@ if(QUIXICORE_CPU_BUILD_TESTS)
       PRIVATE QUIXICORE_CPU_HAVE_QGEMV_DOTPROD=1)
   endif()
   add_test(NAME quant_gemv COMMAND test_quant_gemv)
+
+  add_executable(test_rms_norm tests/correctness/test_rms_norm.cpp)
+  target_link_libraries(test_rms_norm PRIVATE QuixiCoreCPU::quixicore_cpu)
+  target_include_directories(test_rms_norm
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # kernel-internal headers
+  add_test(NAME rms_norm COMMAND test_rms_norm)
 
   if(QUIXICORE_CPU_BUILD_TOOLS)
     add_test(NAME cpu_info_tool COMMAND quixicore_cpu_info)

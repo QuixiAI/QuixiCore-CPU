@@ -13,6 +13,7 @@ add_executable(quixicore_cpu_bench
   harness/timing.cpp
   cases/mem_triad.cpp
   cases/qgemv.cpp
+  cases/rms_norm.cpp
   cases/sgemv_naive.cpp
 )
 target_link_libraries(quixicore_cpu_bench PRIVATE QuixiCoreCPU::quixicore_cpu)

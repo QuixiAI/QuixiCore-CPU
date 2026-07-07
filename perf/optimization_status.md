@@ -23,8 +23,51 @@ performance claim must add a focused optimization entry here.
 
 | Date | Kernel | Dtype / Format | Shape Set | Target | Baseline | Candidate | Decision | Evidence |
 |---|---|---|---|---|---:|---:|---|---|
+| 2026-07-07 | rms_norm | f32 | decode_small (R1-R4, H2048/H4096) + R512 stress | aarch64 NEON | 2.26 us | 0.52 us | keep neon variant (4.3-4.6x over ref) | `perf/results/2026-07-07/024347-quick/` |
 | 2026-07-07 | quant_gemv | q8_0 | quant_matmul m=1 (4096x4096, 8192x8192, 16384x4096) | aarch64 NEON DotProd | 4.314 ms | 0.301 ms | keep dotprod variant (14.4x, 51% of DRAM roofline) | `perf/results/2026-07-07/023619-quick/` |
 | 2026-07-07 | quant_gemv | q8_0 | quant_matmul m=1 (4096x4096, 8192x8192, 16384x4096) | aarch64 baseline flags | 4.319 ms | 4.441 ms | reject multi-acc candidate; keep plain loop as ref | `perf/results/2026-07-07/022305-quick/` |
+
+## 2026-07-07: rms_norm f32 reference + NEON variant
+
+Status: landed.
+Current implementation: `kernels/norms/rms_norm_ref.cpp` (scalar, float64
+sum-of-squares accumulation — a near-oracle reference) and
+`kernels/norms/rms_norm_neon.cpp` (f32 four-accumulator sum of squares +
+vectorized scale pass; NEON is baseline on aarch64, no extra build flags).
+Current public route: `quixicore_cpu::rms_norm` via
+`src/dispatch/rms_norm.cpp`; resolves `neon` on aarch64, `ref` elsewhere;
+`QUIXICORE_CPU_RMS_NORM_VARIANT` override.
+References inspected: ggml rms_norm (float64-accumulating scalar
+reference precedent).
+Correctness: `tests/correctness/test_rms_norm.cpp` — float64 oracle at
+umbrella fp32 tolerance (public and neon < 1e-5, measured ~2e-7; ref
+< 1e-6), shapes with vector tails (H1, H7, H777), zero-row finiteness,
+public-vs-variant bit-exact, determinism (norms family policy).
+Baseline: `ref` scalar via direct call (the `ref_scalar` bench baseline).
+Experiments: single candidate (NEON f32 structure above). Result:
+4.34-4.58x over ref on all shapes. The ref pays for scalar float64
+accumulation; the NEON f32 pairwise-style sums keep error at ~2e-7 while
+vectorizing fully.
+Decision: keep. Decode shapes run at 94-97 GB/s (cache-resident, vs
+~246 GB/s in-cache triad); R512xH4096 at 63.8 GB/s.
+Open questions: batch>1 threading once the thread pool exists; fused
+residual-add variant if the contract adds it.
+Raw results: `perf/results/2026-07-07/024347-quick/` (git-ignored; table
+below).
+
+- Hardware: Apple M4 Max, 16 logical cores (12P+4E), 128 GB; macOS 26.5.1.
+- Toolchain: Apple Clang 21.0.0 (clang-2100.1.1.101), CMake Release,
+  baseline arch flags throughout (NEON is aarch64 baseline).
+- Command: `scripts/bench --preset quick --kernel rms_norm` (warmup 3,
+  iters 20, min_sample_ms 2.0, threads 1).
+- Working-tree label: `1eb4984-dirty`.
+
+| shape | neon us | CV | vs ref | GB/s | rel err | decision |
+|---|---:|---:|---:|---:|---|---|
+| R1 H2048 | 0.25 | 0.046 | 4.43x | 97.1 | 7.5e-08 | keep |
+| R1 H4096 | 0.52 | 0.056 | 4.34x | 94.4 | 1.3e-07 | keep |
+| R4 H4096 | 2.03 | 0.031 | 4.40x | 72.7 | 1.2e-07 | keep |
+| R512 H4096 | 263.33 | 0.052 | 4.58x | 63.8 | 2.2e-07 | keep |
 
 ## 2026-07-07: quant_gemv q8_0 NEON DotProd variant
 

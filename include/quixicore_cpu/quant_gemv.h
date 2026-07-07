@@ -2,16 +2,12 @@
 
 #include <cstddef>
 
+#include "quixicore_cpu/status.h"
+
 namespace quixicore_cpu {
 
 enum class QuantFormat {
   kQ8_0,  // GGUF q8_0: 32-element blocks, fp16 scale + 32 int8 values
-};
-
-enum class Status {
-  kOk,
-  kInvalidShape,       // n/k not positive, or k not a block-size multiple
-  kUnsupportedFormat,
 };
 
 // Packed size in bytes of an n x k row-major weight matrix.
