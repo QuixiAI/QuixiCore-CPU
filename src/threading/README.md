@@ -1,13 +1,22 @@
 # Threading
 
-CPU work partitioning. Planned responsibilities:
+CPU work partitioning. Implemented:
 
-- a lightweight thread pool sized to physical topology,
-- work partitioning helpers for row/tile blocking across threads,
-- affinity and NUMA placement policy (documented per `perf/perf.md` whenever
-  it affects a measurement).
+- `thread_pool.h/.cpp` — fork-join pool with persistent workers and a
+  deterministic contiguous-range partition (`parallel_ranges`). Public
+  thread-count control is `quixicore_cpu::set_num_threads()` /
+  `num_threads()` (`include/quixicore_cpu/threading.h`); default 1 keeps
+  everything synchronous. Small counts and nested calls execute inline;
+  ranges never split finer than the caller's `min_per_chunk`, so kernel
+  outputs are bit-identical at any thread count (rows are never split
+  across workers). No allocation per call (fn-pointer + context, not
+  `std::function`). macOS workers request user-initiated QoS to stay on
+  performance cores.
+- Kernels take the pool via `parallel_ranges`; they never spawn threads.
+  Hot loop bodies live in free functions with by-value arguments — see the
+  codegen note in `thread_pool.h` (capture-frame aliasing measured 1.6-1.9x
+  slowdowns before that rule).
 
-Kernels take a thread-context argument rather than spawning threads
-themselves, so single-threaded correctness testing stays trivial.
-
-Empty apart from this note until the first threaded kernel lands.
+Planned: affinity pinning and NUMA placement policy when server-class
+multi-socket targets arrive (documented per `perf/perf.md` whenever it
+affects a measurement).

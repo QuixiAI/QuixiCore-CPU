@@ -14,6 +14,7 @@
 #include "harness/case.h"
 #include "harness/donotopt.h"
 #include "harness/shapes.h"
+#include "src/threading/thread_pool.h"
 
 namespace qcb {
 namespace {
@@ -68,21 +69,29 @@ CaseDecl make_triad_decl(long long ws_bytes) {
     }
 
     CaseBody body;
+    // Runs on the library pool: single-range (inline) at --threads 1, row
+    // chunks at higher counts, so one case measures both rooflines.
     body.target = [bufs]() {
-      float* a = bufs->a.get();
-      const float* b = bufs->b.get();
-      const float* c = bufs->c.get();
-      const long long n = bufs->n;
-      for (long long i = 0; i < n; ++i) {
-        a[i] = b[i] + kScale * c[i];
-      }
-      do_not_optimize(a);
+      quixicore_cpu::threading::parallel_ranges(
+          bufs->n, 1 << 16, [&](long long i0, long long i1, int) {
+            // Locals, not captures, in the hot loop (thread_pool.h note).
+            float* const a = bufs->a.get();
+            const float* const b = bufs->b.get();
+            const float* const c = bufs->c.get();
+            for (long long i = i0; i < i1; ++i) {
+              a[i] = b[i] + kScale * c[i];
+            }
+          });
+      do_not_optimize(bufs->a.get());
     };
     // memcpy moves 2*n*4 bytes (read b, write a) versus triad's 3*n*4;
     // convert accordingly when comparing bandwidths.
     body.baselines.emplace_back("memcpy", [bufs]() {
-      std::memcpy(bufs->a.get(), bufs->b.get(),
-                  static_cast<size_t>(bufs->n) * sizeof(float));
+      quixicore_cpu::threading::parallel_ranges(
+          bufs->n, 1 << 16, [&](long long i0, long long i1, int) {
+            std::memcpy(bufs->a.get() + i0, bufs->b.get() + i0,
+                        static_cast<size_t>(i1 - i0) * sizeof(float));
+          });
       do_not_optimize(bufs->a.get());
     });
     body.check = [bufs]() {

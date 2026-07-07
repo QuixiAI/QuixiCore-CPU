@@ -13,12 +13,16 @@
 #include <cmath>
 
 #include "kernels/norms/rms_norm.h"
+#include "src/threading/thread_pool.h"
 
 namespace quixicore_cpu::norms {
+namespace {
 
-void rms_norm_neon(const float* x, const float* weight, float* y,
-                   long long rows, long long hidden, float eps) {
-  for (long long r = 0; r < rows; ++r) {
+// Free function with by-value arguments so the hot loops run on true
+// locals; see the codegen note in src/threading/thread_pool.h.
+void rms_rows_neon(const float* x, const float* weight, float* y,
+                   long long hidden, float eps, long long r0, long long r1) {
+  for (long long r = r0; r < r1; ++r) {
     const float* xr = x + r * hidden;
     float* yr = y + r * hidden;
 
@@ -37,7 +41,8 @@ void rms_norm_neon(const float* x, const float* weight, float* y,
       s2 = vfmaq_f32(s2, v2, v2);
       s3 = vfmaq_f32(s3, v3, v3);
     }
-    float sumsq = vaddvq_f32(vaddq_f32(vaddq_f32(s0, s1), vaddq_f32(s2, s3)));
+    float sumsq =
+        vaddvq_f32(vaddq_f32(vaddq_f32(s0, s1), vaddq_f32(s2, s3)));
     for (; j < hidden; ++j) {
       sumsq += xr[j] * xr[j];
     }
@@ -55,6 +60,15 @@ void rms_norm_neon(const float* x, const float* weight, float* y,
       yr[j] = xr[j] * weight[j] * scale;
     }
   }
+}
+
+}  // namespace
+
+void rms_norm_neon(const float* x, const float* weight, float* y,
+                   long long rows, long long hidden, float eps) {
+  threading::parallel_ranges(rows, 8, [&](long long r0, long long r1, int) {
+    rms_rows_neon(x, weight, y, hidden, eps, r0, r1);
+  });
 }
 
 }  // namespace quixicore_cpu::norms

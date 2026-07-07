@@ -73,7 +73,9 @@ Every optimized kernel result is compared against, at minimum:
 2. **The machine roofline** from `mem_triad`: memory-bound kernels
    (quantized decode GEMV/GEMM) are judged as achieved `weight_gbps`
    against the triad DRAM bandwidth on the same machine — proves the
-   variant approaches what the memory system allows.
+   variant approaches what the memory system allows. Run the triad at the
+   same `--threads` value as the kernel: single-thread kernels compare to
+   the single-thread roofline, threaded kernels to the aggregate one.
 3. **The current QuixiCore implementation** before the change — proves the
    change is a win, not a shuffle.
 

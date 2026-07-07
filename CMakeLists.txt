@@ -25,6 +25,7 @@ add_library(quixicore_cpu STATIC
   src/runtime/cpu_features.cpp
   src/runtime/cpu_features_x86_64.cpp
   src/runtime/cpu_features_aarch64.cpp
+  src/threading/thread_pool.cpp
   kernels/norms/rms_norm_ref.cpp
   kernels/norms/rms_norm_neon.cpp
   kernels/quantization/qgemv_ref.cpp
@@ -87,6 +88,12 @@ if(QUIXICORE_CPU_BUILD_TESTS)
   target_include_directories(test_rms_norm
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # kernel-internal headers
   add_test(NAME rms_norm COMMAND test_rms_norm)
+
+  add_executable(test_threading tests/unit/test_threading.cpp)
+  target_link_libraries(test_threading PRIVATE QuixiCoreCPU::quixicore_cpu)
+  target_include_directories(test_threading
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # kernel-internal headers
+  add_test(NAME threading COMMAND test_threading)
 
   if(QUIXICORE_CPU_BUILD_TOOLS)
     add_test(NAME cpu_info_tool COMMAND quixicore_cpu_info)

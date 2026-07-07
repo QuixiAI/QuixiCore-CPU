@@ -19,6 +19,7 @@
 #include "harness/env_info.h"
 #include "harness/report.h"
 #include "harness/timing.h"
+#include "quixicore_cpu/threading.h"
 
 #if defined(__APPLE__)
 #include <pthread/qos.h>
@@ -54,8 +55,8 @@ void print_usage(std::ostream& os) {
         " 2.0)\n"
         "  --no-check                           skip the correctness"
         " oracle\n"
-        "  --threads N                          recorded only; v1 cases are"
-        " single-threaded\n"
+        "  --threads N                          total parallelism for"
+        " threaded kernels (default 1)\n"
         "  --out-dir PATH                       output directory (default"
         " perf/results/<date>/<time>-<preset>)\n"
         "  --help\n";
@@ -209,10 +210,7 @@ int run(const Options& opts) {
   if (selected.empty()) {
     return 2;
   }
-  if (opts.threads != 1) {
-    std::printf("note: cases are single-threaded in v1; --threads is only"
-                " recorded\n");
-  }
+  quixicore_cpu::set_num_threads(opts.threads);
 
   std::string out_dir = opts.out_dir;
   if (out_dir.empty()) {

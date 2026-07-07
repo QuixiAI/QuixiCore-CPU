@@ -22,6 +22,7 @@
 
 #include "kernels/common/fp16.h"
 #include "kernels/quantization/qgemv.h"
+#include "src/threading/thread_pool.h"
 
 namespace quixicore_cpu::qgemv {
 namespace {
@@ -61,20 +62,12 @@ void quantize_activations(const float* x, long long k, std::vector<int8_t>& q,
   }
 }
 
-}  // namespace
-
-void q8_0_gemv_dotprod(const BlockQ8_0* packed, const float* x, float* y,
-                       long long n, long long k) {
-  const long long blocks = k / kQ8_0BlockSize;
-
-  // Grow-only per-thread scratch: no allocation on repeat calls.
-  thread_local std::vector<int8_t> qx;
-  thread_local std::vector<float> dx;
-  quantize_activations(x, k, qx, dx);
-  const int8_t* qx_data = qx.data();
-  const float* dx_data = dx.data();
-
-  for (long long i = 0; i < n; ++i) {
+// Free function with by-value arguments so the hot loops run on true
+// locals; see the codegen note in src/threading/thread_pool.h.
+void gemv_rows_dotprod(const BlockQ8_0* packed, const int8_t* qx_data,
+                       const float* dx_data, float* y, long long blocks,
+                       long long i0, long long i1) {
+  for (long long i = i0; i < i1; ++i) {
     const BlockQ8_0* row = packed + i * blocks;
     float32x4_t sumv0 = vdupq_n_f32(0.0f);
     float32x4_t sumv1 = vdupq_n_f32(0.0f);
@@ -108,6 +101,25 @@ void q8_0_gemv_dotprod(const BlockQ8_0* packed, const float* x, float* y,
     }
     y[i] = acc;
   }
+}
+
+}  // namespace
+
+void q8_0_gemv_dotprod(const BlockQ8_0* packed, const float* x, float* y,
+                       long long n, long long k) {
+  const long long blocks = k / kQ8_0BlockSize;
+
+  // Grow-only per-thread scratch: no allocation on repeat calls. Quantized
+  // once on the caller; workers read it shared.
+  thread_local std::vector<int8_t> qx;
+  thread_local std::vector<float> dx;
+  quantize_activations(x, k, qx, dx);
+  const int8_t* qx_data = qx.data();
+  const float* dx_data = dx.data();
+
+  threading::parallel_ranges(n, 32, [&](long long i0, long long i1, int) {
+    gemv_rows_dotprod(packed, qx_data, dx_data, y, blocks, i0, i1);
+  });
 }
 
 }  // namespace quixicore_cpu::qgemv

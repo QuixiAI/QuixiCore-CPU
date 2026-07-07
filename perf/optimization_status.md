@@ -23,9 +23,65 @@ performance claim must add a focused optimization entry here.
 
 | Date | Kernel | Dtype / Format | Shape Set | Target | Baseline | Candidate | Decision | Evidence |
 |---|---|---|---|---|---:|---:|---|---|
+| 2026-07-07 | quant_gemv + rms_norm (threading) | q8_0 / f32 | quant_matmul m=1 + R512 stress | aarch64, 8-12 threads | 0.303 ms | 0.068 ms | keep row-partitioned threading (4.3-4.5x, saturates aggregate DRAM BW) | `perf/results/2026-07-07/0307{23,45,51}-quick/` |
 | 2026-07-07 | rms_norm | f32 | decode_small (R1-R4, H2048/H4096) + R512 stress | aarch64 NEON | 2.26 us | 0.52 us | keep neon variant (4.3-4.6x over ref) | `perf/results/2026-07-07/024347-quick/` |
 | 2026-07-07 | quant_gemv | q8_0 | quant_matmul m=1 (4096x4096, 8192x8192, 16384x4096) | aarch64 NEON DotProd | 4.314 ms | 0.301 ms | keep dotprod variant (14.4x, 51% of DRAM roofline) | `perf/results/2026-07-07/023619-quick/` |
 | 2026-07-07 | quant_gemv | q8_0 | quant_matmul m=1 (4096x4096, 8192x8192, 16384x4096) | aarch64 baseline flags | 4.319 ms | 4.441 ms | reject multi-acc candidate; keep plain loop as ref | `perf/results/2026-07-07/022305-quick/` |
+
+## 2026-07-07: Threading layer — row-partitioned kernels on a fork-join pool
+
+Status: landed.
+Current implementation: `src/threading/thread_pool.{h,cpp}` — persistent
+fork-join workers, deterministic contiguous-range partition, inline
+execution for small counts / nesting / `num_threads()==1`, no per-call
+allocation (fn-pointer + context trampoline). Public control:
+`quixicore_cpu::set_num_threads()` (default 1). `quant_gemv` (both
+variants) and `rms_norm` (both variants) partition rows; the harness
+`--threads` flag now drives the pool, and `mem_triad` runs on it too so
+one probe measures single-thread and aggregate rooflines.
+Current public route: unchanged APIs; thread count via
+`include/quixicore_cpu/threading.h`.
+References inspected: llama.cpp/ggml threadpool chunking conventions.
+Correctness: `tests/unit/test_threading.cpp` — exact range coverage,
+small-count inlining, nested-call inline fallback, and bit-exact kernel
+outputs at 1 vs 4 threads for quant_gemv and rms_norm (rows are never
+split, so results are identical at any thread count). Full suite 7/7.
+Baseline: 1-thread numbers from the same build (see table).
+Experiments:
+1. First wrapper used `std::function` + capture-heavy lambdas: measured
+   1.6-1.9x SINGLE-THREAD regression on rms_norm (loop bounds/pointers
+   reloaded through the capture frame every iteration — stores through the
+   output pointer may alias the frame). Rejected; replaced with the
+   fn-pointer trampoline and free-function loop bodies with by-value
+   arguments. Single-thread numbers recovered (qgemv 0.303 ms, R512
+   0.284 ms; residual ~80 ns/call on microsecond cases from the control
+   mutex — accepted, decode-sized rms_norm calls stay inline anyway).
+2. Row-partitioned execution at 8 and 12 threads (12P+4E hybrid; no
+   pinning, macOS QoS bias only). Kept.
+Decision: keep. Threaded q8_0 GEMV reaches 263-266 W-GB/s, matching the
+aggregate DRAM roofline the threaded triad measures (251-304 GB/s) — the
+kernel is bandwidth-saturated; more threads cannot help until memory does.
+Decode-latency shapes (R1-R4) correctly stay on the inline path.
+Open questions: 8 vs 12 threads is shape-dependent on the hybrid part
+(E-core drag vs extra bandwidth); revisit with affinity pinning. NUMA
+policy deferred until multi-socket hardware exists.
+Raw results: `perf/results/2026-07-07/030723-quick/` (1t),
+`030745-quick/` (8t), `030751-quick/` (12t).
+
+- Hardware: Apple M4 Max, 16 logical cores (12P+4E), 128 GB; macOS 26.5.1.
+- Toolchain: Apple Clang 21.0.0 (clang-2100.1.1.101), CMake Release.
+- Command: `scripts/bench --preset quick --kernel qgemv,mem_triad,rms_norm
+  --threads {1,8,12}`.
+- Working-tree label: `a5c080a-dirty`.
+
+| case | 1t ms | 8t ms | 8t speedup | 12t ms | 12t speedup | best BW | decision |
+|---|---:|---:|---:|---:|---:|---:|---|
+| qgemv N4096 K4096 | 0.3029 | 0.0679 | 4.46x | 0.0820 | 3.69x | 263 W-GB/s | keep |
+| qgemv N8192 K8192 | 1.1962 | 0.3166 | 3.78x | 0.2678 | 4.47x | 266 W-GB/s | keep |
+| qgemv N16384 K4096 | 1.1749 | 0.3056 | 3.84x | 0.2696 | 4.36x | 264 W-GB/s | keep |
+| rms_norm R512 H4096 | 0.2840 | 0.0663 | 4.28x | 0.0754 | 3.77x | 253 GB/s | keep |
+| mem_triad ws_192MiB (roofline) | 1.72-2.24 | 0.8022 | — | 0.6632 | — | 251-304 GB/s | reference |
+| mem_triad ws_24MiB (roofline) | 0.2480 | 0.0645 | — | 0.0685 | — | 368-390 GB/s | reference |
 
 ## 2026-07-07: rms_norm f32 reference + NEON variant
 

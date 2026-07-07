@@ -7,6 +7,7 @@
 #include <cmath>
 
 #include "kernels/common/fp16.h"
+#include "src/threading/thread_pool.h"
 
 namespace quixicore_cpu::qgemv {
 
@@ -50,10 +51,13 @@ void q8_0_unpack_ref(const BlockQ8_0* packed, long long n, long long k,
   }
 }
 
-void q8_0_gemv_ref(const BlockQ8_0* packed, const float* x, float* y,
-                   long long n, long long k) {
-  const long long blocks_per_row = k / kQ8_0BlockSize;
-  for (long long i = 0; i < n; ++i) {
+namespace {
+
+// Free function with by-value arguments so the hot loops run on true
+// locals; see the codegen note in src/threading/thread_pool.h.
+void gemv_rows_ref(const BlockQ8_0* packed, const float* x, float* y,
+                   long long blocks_per_row, long long i0, long long i1) {
+  for (long long i = i0; i < i1; ++i) {
     const BlockQ8_0* row = packed + i * blocks_per_row;
     // Deliberately the plain loop: a manual 4-way multi-accumulator split
     // measured 2-3% slower because compilers auto-vectorize this form
@@ -71,6 +75,16 @@ void q8_0_gemv_ref(const BlockQ8_0* packed, const float* x, float* y,
     }
     y[i] = acc;
   }
+}
+
+}  // namespace
+
+void q8_0_gemv_ref(const BlockQ8_0* packed, const float* x, float* y,
+                   long long n, long long k) {
+  const long long blocks_per_row = k / kQ8_0BlockSize;
+  threading::parallel_ranges(n, 32, [&](long long i0, long long i1, int) {
+    gemv_rows_ref(packed, x, y, blocks_per_row, i0, i1);
+  });
 }
 
 }  // namespace quixicore_cpu::qgemv

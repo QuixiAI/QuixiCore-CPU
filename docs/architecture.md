@@ -86,8 +86,8 @@ include/quixicore_cpu/     Public headers (backend metadata, cpu_features).
 src/
   backend.cpp              Contract metadata and status reporting.
   runtime/                 Runtime CPU feature detection per OS/arch.
-  dispatch/                Kernel variant selection (placeholder).
-  threading/               Thread pool and partitioning (placeholder).
+  dispatch/                Public op entry points and variant selection.
+  threading/               Fork-join pool; set_num_threads() control.
   memory/                  Aligned alloc and packing buffers (placeholder).
 kernels/                   Microkernels: <family>/<op>_<isa>.cpp.
 tests/
