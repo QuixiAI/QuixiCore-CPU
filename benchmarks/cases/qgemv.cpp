@@ -2,12 +2,18 @@
 // point — the first contract-kernel benchmark case.
 //
 // Baselines per the three-baseline rule (perf/perf.md):
+//   ref_scalar      — the library's scalar reference called directly (the
+//                     prior implementation ISA variants must beat),
 //   scalar_multiacc — manual 4-accumulator scalar variant, rejected in the
 //                     2026-07-07 optimization run (2-3% slower than the
 //                     auto-vectorized plain loop); kept here so the A/B
 //                     stays reproducible,
 //   dequant_sgemv   — naive decomposed path: unpack to f32, then scalar GEMV.
 // The roofline comparison is weight_gbps vs mem_triad DRAM bandwidth.
+//
+// The in-harness oracle uses f32 activations; variants that quantize
+// activations (dotprod) legitimately report rel err around 1e-3 here. The
+// tight per-variant oracles live in tests/correctness/test_quant_gemv.cpp.
 //
 // Shape provenance: umbrella quant_matmul family at m = 1 (decode), plus
 // 2048 from decode_small hidden sizes.
@@ -157,6 +163,12 @@ CaseDecl make_qgemv_decl(long long n, long long k) {
       }
       do_not_optimize(bufs->y.get());
     };
+    body.baselines.emplace_back("ref_scalar", [bufs]() {
+      quixicore_cpu::qgemv::q8_0_gemv_ref(
+          reinterpret_cast<const BlockQ8_0*>(bufs->packed.get()),
+          bufs->x.get(), bufs->y.get(), bufs->n, bufs->k);
+      do_not_optimize(bufs->y.get());
+    });
     body.baselines.emplace_back("scalar_multiacc", [bufs]() {
       scalar_multiacc_gemv(
           reinterpret_cast<const BlockQ8_0*>(bufs->packed.get()),

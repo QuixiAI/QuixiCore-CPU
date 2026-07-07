@@ -17,6 +17,9 @@ not contract kernels:
 
 | Date | Kernel | Dtype / Format | Shape Set | Target | Command | Median | Min / Max or Variance | Artifact | Notes |
 |---|---|---|---|---|---|---:|---|---|---|
+| 2026-07-07 | quant_gemv (`dotprod`) | q8_0 | quant_matmul m=1 N4096 K4096 | Apple M4 Max, 1 thread, NEON DotProd | `scripts/bench --preset quick --kernel qgemv` | 0.3006 ms | CV 0.020 | `perf/results/2026-07-07/023619-quick/` | 59.3 W-GB/s = 51% of triad DRAM roofline; in-progress |
+| 2026-07-07 | quant_gemv (`dotprod`) | q8_0 | quant_matmul m=1 N8192 K8192 | Apple M4 Max, 1 thread, NEON DotProd | `scripts/bench --preset quick --kernel qgemv` | 1.2010 ms | CV 0.018 | `perf/results/2026-07-07/023619-quick/` | 59.4 W-GB/s; in-progress |
+| 2026-07-07 | quant_gemv (`dotprod`) | q8_0 | quant_matmul m=1 N16384 K4096 | Apple M4 Max, 1 thread, NEON DotProd | `scripts/bench --preset quick --kernel qgemv` | 1.2012 ms | CV 0.025 | `perf/results/2026-07-07/023619-quick/` | 59.4 W-GB/s; in-progress |
 | 2026-07-07 | quant_gemv (`ref`) | q8_0 | quant_matmul m=1 N4096 K4096 | Apple M4 Max, 1 thread, baseline flags | `scripts/bench --preset quick --kernel qgemv` | 4.3189 ms | CV 0.014 | `perf/results/2026-07-07/022305-quick/` | scalar reference; in-progress, not claimed supported |
 | 2026-07-07 | quant_gemv (`ref`) | q8_0 | quant_matmul m=1 N8192 K8192 | Apple M4 Max, 1 thread, baseline flags | `scripts/bench --preset quick --kernel qgemv` | 17.2801 ms | CV 0.022 | `perf/results/2026-07-07/022305-quick/` | scalar reference; in-progress, not claimed supported |
 | 2026-07-07 | quant_gemv (`ref`) | q8_0 | quant_matmul m=1 N16384 K4096 | Apple M4 Max, 1 thread, baseline flags | `scripts/bench --preset quick --kernel qgemv` | 17.1908 ms | CV 0.011 | `perf/results/2026-07-07/022305-quick/` | scalar reference; in-progress, not claimed supported |

@@ -11,6 +11,8 @@
 #include <vector>
 
 #include "kernels/common/fp16.h"
+#include "kernels/quantization/qgemv.h"
+#include "quixicore_cpu/cpu_features.h"
 #include "quixicore_cpu/quant_gemv.h"
 
 // Tests must fail in any build configuration, so no assert()/NDEBUG.
@@ -77,8 +79,15 @@ int main() {
                                                 &size) == Status::kOk);
   REQUIRE(size == 4 * 2 * 34);
 
-  REQUIRE(std::string(quixicore_cpu::quant_gemv_variant(QuantFormat::kQ8_0)) ==
-          "ref");
+  const std::string variant =
+      quixicore_cpu::quant_gemv_variant(QuantFormat::kQ8_0);
+  const bool expect_dotprod =
+#if defined(QUIXICORE_CPU_HAVE_QGEMV_DOTPROD)
+      quixicore_cpu::cpu_features().dotprod;
+#else
+      false;
+#endif
+  REQUIRE(variant == (expect_dotprod ? "dotprod" : "ref"));
 
   const std::vector<std::pair<long long, long long>> shapes = {
       {1, 32}, {3, 64}, {5, 96}, {33, 512}, {129, 2048}};
@@ -128,32 +137,109 @@ int main() {
             Status::kOk);
     REQUIRE(std::memcmp(y.data(), y2.data(), n * sizeof(float)) == 0);
 
-    // Oracle 1 (tight): float64 GEMV over the dequantized weights isolates
-    // the kernel's own accumulation error.
-    // Oracle 2 (contract): float64 GEMV over the original weights bounds
-    // total quantization + kernel error at the quantized tolerance.
-    // Both use the repo error convention: max|diff| / (max|ref| + 1e-9).
-    double max_abs_dq = 0.0;
-    double max_ref_dq = 0.0;
-    double max_abs_orig = 0.0;
-    double max_ref_orig = 0.0;
+    // Float64 oracles, repo error convention max|diff| / (max|ref| + 1e-9):
+    //   acc_dq   — GEMV over dequantized weights, f32 activations (isolates
+    //              kernel accumulation error for f32-activation paths),
+    //   acc_orig — GEMV over the original weights (contract bound: total
+    //              quantization + kernel error at the quantized tolerance).
+    std::vector<double> acc_dq(static_cast<size_t>(n));
+    std::vector<double> acc_orig(static_cast<size_t>(n));
     for (long long i = 0; i < n; ++i) {
-      double acc_dq = 0.0;
-      double acc_orig = 0.0;
+      double sum_dq = 0.0;
+      double sum_orig = 0.0;
       for (long long j = 0; j < k; ++j) {
-        acc_dq += static_cast<double>(dq[static_cast<size_t>(i * k + j)]) *
+        sum_dq += static_cast<double>(dq[static_cast<size_t>(i * k + j)]) *
                   x[static_cast<size_t>(j)];
-        acc_orig += static_cast<double>(w[static_cast<size_t>(i * k + j)]) *
+        sum_orig += static_cast<double>(w[static_cast<size_t>(i * k + j)]) *
                     x[static_cast<size_t>(j)];
       }
-      const double out = y[static_cast<size_t>(i)];
-      max_abs_dq = std::fmax(max_abs_dq, std::fabs(out - acc_dq));
-      max_ref_dq = std::fmax(max_ref_dq, std::fabs(acc_dq));
-      max_abs_orig = std::fmax(max_abs_orig, std::fabs(out - acc_orig));
-      max_ref_orig = std::fmax(max_ref_orig, std::fabs(acc_orig));
+      acc_dq[static_cast<size_t>(i)] = sum_dq;
+      acc_orig[static_cast<size_t>(i)] = sum_orig;
     }
-    REQUIRE(max_abs_dq / (max_ref_dq + 1e-9) < 1e-4);
-    REQUIRE(max_abs_orig / (max_ref_orig + 1e-9) < 0.03);
+    const auto max_rel = [n](const float* out, const std::vector<double>& ref) {
+      double max_abs = 0.0;
+      double max_r = 0.0;
+      for (long long i = 0; i < n; ++i) {
+        max_abs = std::fmax(
+            max_abs, std::fabs(out[static_cast<size_t>(i)] -
+                               ref[static_cast<size_t>(i)]));
+        max_r = std::fmax(max_r, std::fabs(ref[static_cast<size_t>(i)]));
+      }
+      return max_abs / (max_r + 1e-9);
+    };
+
+    // Public entry (whatever variant dispatch resolved): the contract bound
+    // applies to every variant. The tight f32-activation oracle only makes
+    // sense for f32-activation paths — for activation-quantizing variants
+    // (dotprod) it measures quantization error against a possibly tiny
+    // output and is checked instead via bit-exact equivalence to the direct
+    // variant call plus that variant's own oracle below.
+    REQUIRE(max_rel(y.data(), acc_orig) < 0.03);
+    if (!expect_dotprod) {
+      REQUIRE(max_rel(y.data(), acc_dq) < 1e-4);
+    }
+
+    // The scalar reference, called directly, always meets the tight bound.
+    std::vector<float> y_ref(static_cast<size_t>(n));
+    quixicore_cpu::qgemv::q8_0_gemv_ref(
+        reinterpret_cast<const quixicore_cpu::qgemv::BlockQ8_0*>(
+            packed.data()),
+        x.data(), y_ref.data(), n, k);
+    REQUIRE(max_rel(y_ref.data(), acc_dq) < 1e-4);
+    REQUIRE(max_rel(y_ref.data(), acc_orig) < 0.03);
+
+#if defined(QUIXICORE_CPU_HAVE_QGEMV_DOTPROD)
+    if (expect_dotprod) {
+      // The dotprod variant quantizes activations to int8 blocks; its tight
+      // oracle is float64 GEMV over dequantized weights AND dequantized
+      // quantized activations (the int dot itself is exact).
+      std::vector<float> yd(static_cast<size_t>(n));
+      quixicore_cpu::qgemv::q8_0_gemv_dotprod(
+          reinterpret_cast<const quixicore_cpu::qgemv::BlockQ8_0*>(
+              packed.data()),
+          x.data(), yd.data(), n, k);
+
+      // The dispatched public entry must be exactly this variant.
+      REQUIRE(std::memcmp(y.data(), yd.data(), n * sizeof(float)) == 0);
+
+      // Replicate the activation quantization spec: d = amax/127, nearbyint.
+      std::vector<double> dqx(static_cast<size_t>(k));
+      for (long long b = 0; b < k / 32; ++b) {
+        float amax = 0.0f;
+        for (long long j = 0; j < 32; ++j) {
+          amax = std::fmax(amax, std::fabs(x[static_cast<size_t>(b * 32 + j)]));
+        }
+        const float d = amax / 127.0f;
+        const float id = d != 0.0f ? 1.0f / d : 0.0f;
+        for (long long j = 0; j < 32; ++j) {
+          const float q = std::nearbyint(x[static_cast<size_t>(b * 32 + j)] * id);
+          dqx[static_cast<size_t>(b * 32 + j)] =
+              static_cast<double>(d) *
+              (q < -127.0f ? -127.0f : (q > 127.0f ? 127.0f : q));
+        }
+      }
+
+      std::vector<double> acc_tight(static_cast<size_t>(n));
+      for (long long i = 0; i < n; ++i) {
+        double sum = 0.0;
+        for (long long j = 0; j < k; ++j) {
+          sum += static_cast<double>(dq[static_cast<size_t>(i * k + j)]) *
+                 dqx[static_cast<size_t>(j)];
+        }
+        acc_tight[static_cast<size_t>(i)] = sum;
+      }
+      REQUIRE(max_rel(yd.data(), acc_tight) < 1e-5);
+      REQUIRE(max_rel(yd.data(), acc_orig) < 0.03);
+
+      // Determinism for the dotprod path.
+      std::vector<float> yd2(static_cast<size_t>(n));
+      quixicore_cpu::qgemv::q8_0_gemv_dotprod(
+          reinterpret_cast<const quixicore_cpu::qgemv::BlockQ8_0*>(
+              packed.data()),
+          x.data(), yd2.data(), n, k);
+      REQUIRE(std::memcmp(yd.data(), yd2.data(), n * sizeof(float)) == 0);
+    }
+#endif
   }
 
   return 0;

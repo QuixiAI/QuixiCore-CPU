@@ -24,6 +24,10 @@ struct Q8_0Variant {
 
 constexpr Q8_0Variant kQ8_0Variants[] = {
     {"ref", &qgemv::q8_0_gemv_ref, [](const CpuFeatures&) { return true; }},
+#if defined(QUIXICORE_CPU_HAVE_QGEMV_DOTPROD)
+    {"dotprod", &qgemv::q8_0_gemv_dotprod,
+     [](const CpuFeatures& f) { return f.dotprod; }},
+#endif
 };
 
 const Q8_0Variant& resolve_q8_0() {

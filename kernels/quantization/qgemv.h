@@ -33,4 +33,11 @@ using Q8_0GemvFn = void (*)(const BlockQ8_0* packed, const float* x, float* y,
 void q8_0_gemv_ref(const BlockQ8_0* packed, const float* x, float* y,
                    long long n, long long k);
 
+// AArch64 DotProd variant: quantizes activations to int8 blocks per call,
+// then int8x int8 SDOT with per-block combined scales. Compiled only when
+// the build defines QUIXICORE_CPU_HAVE_QGEMV_DOTPROD; call only when
+// cpu_features().dotprod is true.
+void q8_0_gemv_dotprod(const BlockQ8_0* packed, const float* x, float* y,
+                       long long n, long long k);
+
 }  // namespace quixicore_cpu::qgemv

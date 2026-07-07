@@ -46,6 +46,13 @@ endif()
 
 quixicore_cpu_report_isa_support()
 
+quixicore_cpu_add_isa_sources(quixicore_cpu ISA dotprod
+  SOURCES kernels/quantization/qgemv_dotprod.cpp)
+if(QUIXICORE_CPU_ISA_DOTPROD_SUPPORTED)
+  target_compile_definitions(quixicore_cpu
+    PRIVATE QUIXICORE_CPU_HAVE_QGEMV_DOTPROD=1)
+endif()
+
 if(QUIXICORE_CPU_BUILD_TOOLS)
   add_executable(quixicore_cpu_info tools/quixicore_cpu_info.cpp)
   target_link_libraries(quixicore_cpu_info PRIVATE QuixiCoreCPU::quixicore_cpu)
@@ -66,6 +73,10 @@ if(QUIXICORE_CPU_BUILD_TESTS)
   target_link_libraries(test_quant_gemv PRIVATE QuixiCoreCPU::quixicore_cpu)
   target_include_directories(test_quant_gemv
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # kernel-internal headers
+  if(QUIXICORE_CPU_ISA_DOTPROD_SUPPORTED)
+    target_compile_definitions(test_quant_gemv
+      PRIVATE QUIXICORE_CPU_HAVE_QGEMV_DOTPROD=1)
+  endif()
   add_test(NAME quant_gemv COMMAND test_quant_gemv)
 
   if(QUIXICORE_CPU_BUILD_TOOLS)

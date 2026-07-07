@@ -23,7 +23,58 @@ performance claim must add a focused optimization entry here.
 
 | Date | Kernel | Dtype / Format | Shape Set | Target | Baseline | Candidate | Decision | Evidence |
 |---|---|---|---|---|---:|---:|---|---|
+| 2026-07-07 | quant_gemv | q8_0 | quant_matmul m=1 (4096x4096, 8192x8192, 16384x4096) | aarch64 NEON DotProd | 4.314 ms | 0.301 ms | keep dotprod variant (14.4x, 51% of DRAM roofline) | `perf/results/2026-07-07/023619-quick/` |
 | 2026-07-07 | quant_gemv | q8_0 | quant_matmul m=1 (4096x4096, 8192x8192, 16384x4096) | aarch64 baseline flags | 4.319 ms | 4.441 ms | reject multi-acc candidate; keep plain loop as ref | `perf/results/2026-07-07/022305-quick/` |
+
+## 2026-07-07: quant_gemv q8_0 NEON DotProd variant
+
+Status: landed.
+Current implementation: `kernels/quantization/qgemv_dotprod.cpp`
+(`q8_0_gemv_dotprod`): activations quantized to int8 blocks once per call
+(d = amax/127, round-to-nearest, grow-only thread-local scratch), then per
+32-element block two `vdotq_s32` int8x16 dot products accumulated as
+`float32x4` lanes with the combined weight*activation scale
+(`vmlaq_n_f32`), two independent vector accumulators per row, scalar tail
+for odd block counts. Compiled with `-march=armv8.2-a+dotprod` via
+`quixicore_cpu_add_isa_sources()`; baseline build untouched.
+Current public route: `quixicore_cpu::quant_gemv` dispatch resolves
+`dotprod` when `cpu_features().dotprod` is true, else `ref`;
+`QUIXICORE_CPU_QGEMV_VARIANT` still forces either.
+References inspected: llama.cpp `ggml_vec_dot_q8_0_q8_0` NEON structure
+(activation quantization + sdot + per-block scale fmla).
+Correctness: `test_quant_gemv` extended — public entry bit-exact vs the
+direct variant call; tight float64 oracle over dequantized weights AND
+dequantized quantized activations < 1e-5 (int dot is exact; only f32
+scale/accumulate rounds); contract oracle vs original f32 weights < 3e-2
+on every shape (measured 2.8e-3 - 6.5e-3); bit-exact determinism. The
+f32-activation oracle does not apply to this variant (activation
+quantization error dominates on tiny outputs) and is asserted only for
+`ref`.
+Baseline: `ref` scalar via the same public route (previous entry).
+Experiments: single candidate (the structure above). Result: 14.35-14.45x
+over `ref` on all three shapes; 43.98-44.61x over the decomposed
+dequant+sgemv path.
+Decision: keep. 59.3-59.4 effective weight-GB/s = 51% of the same
+machine's mem_triad single-thread DRAM roofline (~115-117 GB/s); the
+remaining gap is per-call activation quantization plus non-streaming
+access, to be revisited with i8mm/threading, not with more scalar work.
+Open questions: i8mm (smmla) variant; multi-thread row partitioning; x86
+VNNI equivalent blocked on hardware.
+Raw results: `perf/results/2026-07-07/023619-quick/` (git-ignored; table
+below).
+
+- Hardware: Apple M4 Max, 16 logical cores (12P+4E), 128 GB; macOS 26.5.1.
+- Toolchain: Apple Clang 21.0.0 (clang-2100.1.1.101), CMake Release; this
+  TU `-march=armv8.2-a+dotprod`, everything else baseline flags.
+- Command: `scripts/bench --preset quick --kernel qgemv` (warmup 3,
+  iters 20, min_sample_ms 2.0, threads 1).
+- Working-tree label: `1092837-dirty`.
+
+| shape (m=1) | dotprod ms | CV | vs ref | vs dequant_sgemv | W-GB/s | GFLOP/s | decision |
+|---|---:|---:|---:|---:|---:|---:|---|
+| N4096 K4096 | 0.3006 | 0.020 | 14.35x | 43.98x | 59.3 | 111.6 | keep |
+| N8192 K8192 | 1.2010 | 0.018 | 14.45x | 44.61x | 59.4 | 111.8 | keep |
+| N16384 K4096 | 1.2012 | 0.025 | 14.45x | 44.15x | 59.4 | 111.7 | keep |
 | 2026-07-07 | harness (system probes) | f32 | mem_triad ladder + quant_matmul m=1 | aarch64 baseline flags | n/a | n/a | harness validated; no kernel, no speedup claim | `perf/results/2026-07-07/021238-quick/` |
 
 ## 2026-07-07: quant_gemv q8_0 scalar reference bring-up
