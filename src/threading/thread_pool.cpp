@@ -49,8 +49,15 @@ class Pool {
     stop_workers();
     total_ = total;
     workers_.reserve(static_cast<size_t>(total - 1));
+    uint64_t initial_generation = 0;
+    {
+      std::lock_guard<std::mutex> lock(m_);
+      initial_generation = generation_;
+    }
     for (int index = 1; index < total; ++index) {
-      workers_.emplace_back([this, index] { worker_loop(index); });
+      workers_.emplace_back([this, index, initial_generation] {
+        worker_loop(index, initial_generation);
+      });
     }
   }
 
@@ -114,12 +121,15 @@ class Pool {
     stop_ = false;
   }
 
-  void worker_loop(int index) {
+  void worker_loop(int index, uint64_t initial_generation) {
 #if defined(__APPLE__)
     // Bias workers toward performance cores alongside the caller.
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
 #endif
-    uint64_t seen = 0;
+    // A worker can be created after the pool has already completed jobs. Use
+    // the generation captured before thread creation: sampling it here could
+    // race with the first job and cause the worker to skip that job.
+    uint64_t seen = initial_generation;
     while (true) {
       RangeFn fn = nullptr;
       void* ctx = nullptr;

@@ -78,13 +78,15 @@ std::string result_row_json(const CaseResult& result) {
     w.key("skip_reason");
     w.val(result.skip_reason);
   }
+  if (result.checked) {
+    w.key("check_passed");
+    w.val(result.check.passed);
+    w.key("max_abs_err");
+    w.val(result.check.max_abs_err);
+    w.key("max_rel_err");
+    w.val(result.check.max_rel_err);
+  }
   if (result.status == "ok") {
-    if (result.checked) {
-      w.key("max_abs_err");
-      w.val(result.check.max_abs_err);
-      w.key("max_rel_err");
-      w.val(result.check.max_rel_err);
-    }
     w.key("target_ms");
     w.val(result.timing.ms);
     w.key("target_p20_ms");

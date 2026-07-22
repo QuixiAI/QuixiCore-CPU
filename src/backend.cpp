@@ -118,7 +118,7 @@ BackendMetadata backend_metadata() {
       "QuixiAI/QuixiCore-CPU",
       "QuixiAI/QuixiCore",
       "v0.1",
-      "planned",
+      "experimental",
       {"x86_64", "aarch64"},
       {"SIMD", "threading"},
   };
@@ -154,4 +154,3 @@ bool is_kernel_family_supported(std::string_view family) {
 }
 
 }  // namespace quixicore_cpu
-

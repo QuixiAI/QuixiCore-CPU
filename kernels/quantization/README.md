@@ -8,9 +8,10 @@ Phase 2): quantized GEMV/GEMM dominates low-batch CPU decode.
 Status: `quant_gemv` family in progress, exposed as `qgemv` (family op
 naming). Contract semantics per Metal/CUDA: `out = dequantize(wq) @ x`,
 full-precision activations, f32 accumulation, GGUF-byte-compatible q8_0.
-Variants: `ref` scalar, `neon` f32-activation (contract default on
-aarch64), `dotprod_i8` int8 SDOT (activation-quantizing — contract-
-divergent, env-forced only; previews a future `qgemv_w8a8` twin op).
+Public variants: `ref` scalar and `neon` f32-activation (contract default on
+aarch64). `dotprod_i8` is an internal int8 SDOT benchmark experiment whose
+activation quantization is contract-divergent; it previews a future
+`qgemv_w8a8` twin op and cannot be selected through public dispatch.
 Dispatch in `src/dispatch/qgemv.cpp`, correctness in
 `tests/correctness/test_qgemv.cpp`, evidence in
 `perf/optimization_status.md` (2026-07-07). Not claimed supported; next:

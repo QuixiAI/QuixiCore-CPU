@@ -3,12 +3,11 @@ name: QuixiCore CPU
 repo: QuixiAI/QuixiCore-CPU
 umbrella: QuixiAI/QuixiCore
 contract: v0.1
-status: planned
+status: experimental
 targets:
   - x86_64
   - aarch64
 integrations:
   - SIMD
   - threading
-notes: Scaffold only. No kernel family is claimed supported until correctness and performance evidence is recorded.
-
+notes: Portable f32 candidates cover every active v0.1 family; family-wide support remains unclaimed pending operation-level dtype, correctness, and benchmark evidence.

@@ -19,7 +19,10 @@ struct BlockQ8_0 {
 static_assert(sizeof(BlockQ8_0) == 34, "q8_0 block layout must be packed");
 
 // Quantize one row-major f32 matrix (n x k, k % 32 == 0) into blocks.
-void q8_0_pack_ref(const float* weights, long long n, long long k,
+// Returns false without performing any undefined float-to-integer conversion
+// when a source weight is NaN or infinity. The output may be partially written
+// on false; the public entry point reports kInvalidArgument.
+bool q8_0_pack_ref(const float* weights, long long n, long long k,
                    BlockQ8_0* packed);
 
 // Dequantize back to row-major f32.
@@ -40,10 +43,10 @@ void q8_0_gemv_neon(const BlockQ8_0* packed, const float* x, float* y,
                     long long n, long long k);
 #endif
 
-// AArch64 DotProd variant: quantizes activations to int8 blocks per call,
+// AArch64 DotProd experiment: quantizes activations to int8 blocks per call,
 // then int8 x int8 SDOT with per-block combined scales. Different numerics
-// than the family qgemv contract (activation quantization) — env-forced
-// only, never auto-selected; it previews a future qgemv_w8a8 twin op.
+// than the family qgemv contract (activation quantization), so it is exposed
+// only to internal tests/benchmarks while previewing a future qgemv_w8a8 op.
 // Compiled only when the build defines QUIXICORE_CPU_HAVE_QGEMV_DOTPROD;
 // call only when cpu_features().dotprod is true.
 void q8_0_gemv_dotprod(const BlockQ8_0* packed, const float* x, float* y,

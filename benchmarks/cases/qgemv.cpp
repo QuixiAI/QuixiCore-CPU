@@ -9,10 +9,10 @@
 //                     auto-vectorized plain loop); kept here so the A/B
 //                     stays reproducible,
 //   dequant_sgemv   — naive decomposed path: unpack to f32, then scalar GEMV,
-//   dotprod_i8      — the activation-quantizing int8 SDOT path (env-forced
-//                     only in dispatch; contract-divergent numerics). Kept
-//                     as a baseline so the speed of the future qgemv_w8a8
-//                     twin op stays visible.
+//   dotprod_i8      — the activation-quantizing int8 SDOT path (internal
+//                     benchmark baseline; contract-divergent numerics). Kept
+//                     so the speed of the future qgemv_w8a8 twin op stays
+//                     visible without exposing it through public dispatch.
 // The roofline comparison is weight_gbps vs mem_triad DRAM bandwidth.
 //
 // The in-harness oracle is the family oracle (dequantized weights x f32
@@ -45,6 +45,11 @@ using quixicore_cpu::QuantFormat;
 using quixicore_cpu::Status;
 using quixicore_cpu::quant::BlockQ8_0;
 using quixicore_cpu::quant::kQ8_0BlockSize;
+
+// qgemv's benchmark oracle starts from exactly dequantized packed weights, so
+// storage quantization error is absent. This is stricter than the umbrella
+// quantized tolerance and isolates the public f32-activation accumulation.
+constexpr Tolerance kQgemvAccumTolerance{1e-4, 1e-4};
 
 class Rng {
  public:
@@ -225,18 +230,16 @@ CaseDecl make_qgemv_decl(long long n, long long k) {
       const float* dq = bufs->scratch.get();
       const float* x = bufs->x.get();
       const float* y = bufs->y.get();
-      double max_abs = 0.0;
-      double max_ref = 0.0;
+      CheckResult check;
       for (long long i = 0; i < bufs->n; ++i) {
         const float* row = dq + i * bufs->k;
         double acc = 0.0;
         for (long long j = 0; j < bufs->k; ++j) {
           acc += static_cast<double>(row[j]) * static_cast<double>(x[j]);
         }
-        max_abs = std::fmax(max_abs, std::fabs(y[i] - acc));
-        max_ref = std::fmax(max_ref, std::fabs(acc));
+        check_value(check, y[i], acc, kQgemvAccumTolerance);
       }
-      return CheckResult{max_abs, max_abs / (max_ref + 1e-9)};
+      return check;
     };
     return body;
   };

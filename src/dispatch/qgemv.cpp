@@ -1,15 +1,15 @@
 // Public qgemv entry points and runtime variant dispatch.
 //
-// Auto-selectable variants are listed slowest-first; resolution picks the
-// last one whose feature predicate passes, resolved once per process.
-// Variants with auto_select == false implement different numerics than the
-// family qgemv contract (e.g. activation quantization) and run only when
-// QUIXICORE_CPU_QGEMV_VARIANT names them explicitly.
+// Contract-compatible variants are listed slowest-first; resolution picks the
+// last one whose feature predicate passes, resolved once per process. Internal
+// activation-quantizing experiments are not members of this dispatch table.
 
 #include "quixicore_cpu/qgemv.h"
 
+#include <climits>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 
 #include "kernels/quantization/qgemv.h"
 #include "quixicore_cpu/cpu_features.h"
@@ -21,20 +21,13 @@ struct Q8_0Variant {
   const char* name;
   quant::Q8_0GemvFn fn;
   bool (*supported)(const CpuFeatures&);
-  bool auto_select;
 };
 
 constexpr Q8_0Variant kQ8_0Variants[] = {
-    {"ref", &quant::q8_0_gemv_ref, [](const CpuFeatures&) { return true; },
-     true},
+    {"ref", &quant::q8_0_gemv_ref, [](const CpuFeatures&) { return true; }},
 #if defined(__aarch64__) || defined(_M_ARM64)
     {"neon", &quant::q8_0_gemv_neon,
-     [](const CpuFeatures& f) { return f.neon; }, true},
-#endif
-#if defined(QUIXICORE_CPU_HAVE_QGEMV_DOTPROD)
-    // Activation-quantizing int8 path; contract-divergent, env-forced only.
-    {"dotprod_i8", &quant::q8_0_gemv_dotprod,
-     [](const CpuFeatures& f) { return f.dotprod; }, false},
+     [](const CpuFeatures& f) { return f.neon; }},
 #endif
 };
 
@@ -52,7 +45,7 @@ const Q8_0Variant& resolve_q8_0() {
     }
     const Q8_0Variant* best = &kQ8_0Variants[0];
     for (const auto& variant : kQ8_0Variants) {
-      if (variant.auto_select && variant.supported(features)) {
+      if (variant.supported(features)) {
         best = &variant;
       }
     }
@@ -68,6 +61,31 @@ Status validate(QuantFormat format, long long n, long long k) {
   if (n <= 0 || k <= 0 || k % quant::kQ8_0BlockSize != 0) {
     return Status::kInvalidShape;
   }
+  // All implementations use signed long-long pointer offsets. Reject shapes
+  // whose logical matrix or packed block count cannot be represented before
+  // those products reach a hot loop.
+  if (n > LLONG_MAX / k ||
+      n > LLONG_MAX / (k / quant::kQ8_0BlockSize)) {
+    return Status::kInvalidShape;
+  }
+  return Status::kOk;
+}
+
+bool checked_mul(size_t a, size_t b, size_t* out) {
+  if (a != 0 && b > std::numeric_limits<size_t>::max() / a) {
+    return false;
+  }
+  *out = a * b;
+  return true;
+}
+
+Status packed_size(long long n, long long k, size_t* size) {
+  size_t blocks = 0;
+  if (!checked_mul(static_cast<size_t>(n),
+                   static_cast<size_t>(k / quant::kQ8_0BlockSize), &blocks) ||
+      !checked_mul(blocks, sizeof(quant::BlockQ8_0), size)) {
+    return Status::kInvalidShape;
+  }
   return Status::kOk;
 }
 
@@ -79,10 +97,10 @@ Status qgemv_packed_size(QuantFormat format, long long n, long long k,
   if (status != Status::kOk) {
     return status;
   }
-  *size = static_cast<size_t>(n) *
-          static_cast<size_t>(k / quant::kQ8_0BlockSize) *
-          sizeof(quant::BlockQ8_0);
-  return Status::kOk;
+  if (size == nullptr) {
+    return Status::kInvalidArgument;
+  }
+  return packed_size(n, k, size);
 }
 
 Status qgemv_pack(QuantFormat format, const float* weights, long long n,
@@ -91,9 +109,17 @@ Status qgemv_pack(QuantFormat format, const float* weights, long long n,
   if (status != Status::kOk) {
     return status;
   }
-  quant::q8_0_pack_ref(weights, n, k,
-                       static_cast<quant::BlockQ8_0*>(packed));
-  return Status::kOk;
+  size_t ignored = 0;
+  if (packed_size(n, k, &ignored) != Status::kOk) {
+    return Status::kInvalidShape;
+  }
+  if (weights == nullptr || packed == nullptr) {
+    return Status::kInvalidArgument;
+  }
+  return quant::q8_0_pack_ref(weights, n, k,
+                              static_cast<quant::BlockQ8_0*>(packed))
+             ? Status::kOk
+             : Status::kInvalidArgument;
 }
 
 Status qgemv_unpack(QuantFormat format, const void* packed, long long n,
@@ -101,6 +127,13 @@ Status qgemv_unpack(QuantFormat format, const void* packed, long long n,
   const Status status = validate(format, n, k);
   if (status != Status::kOk) {
     return status;
+  }
+  size_t ignored = 0;
+  if (packed_size(n, k, &ignored) != Status::kOk) {
+    return Status::kInvalidShape;
+  }
+  if (packed == nullptr || weights == nullptr) {
+    return Status::kInvalidArgument;
   }
   quant::q8_0_unpack_ref(static_cast<const quant::BlockQ8_0*>(packed), n, k,
                          weights);
@@ -112,6 +145,13 @@ Status qgemv(QuantFormat format, const void* packed, const float* x, float* y,
   const Status status = validate(format, n, k);
   if (status != Status::kOk) {
     return status;
+  }
+  size_t ignored = 0;
+  if (packed_size(n, k, &ignored) != Status::kOk) {
+    return Status::kInvalidShape;
+  }
+  if (packed == nullptr || x == nullptr || y == nullptr) {
+    return Status::kInvalidArgument;
   }
   resolve_q8_0().fn(static_cast<const quant::BlockQ8_0*>(packed), x, y, n, k);
   return Status::kOk;

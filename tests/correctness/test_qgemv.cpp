@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -40,6 +41,33 @@ class Rng {
   uint32_t state_;
 };
 
+bool all_close(const float* out, const std::vector<double>& ref, double atol,
+               double rtol) {
+  for (size_t i = 0; i < ref.size(); ++i) {
+    if (!std::isfinite(out[i]) || !std::isfinite(ref[i]) ||
+        std::fabs(static_cast<double>(out[i]) - ref[i]) >
+            atol + rtol * std::fabs(ref[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool global_relative_below(const float* out, const std::vector<double>& ref,
+                           double tolerance) {
+  double max_abs = 0.0;
+  double max_ref = 0.0;
+  for (size_t i = 0; i < ref.size(); ++i) {
+    if (!std::isfinite(out[i]) || !std::isfinite(ref[i])) {
+      return false;
+    }
+    max_abs = std::max(
+        max_abs, std::fabs(static_cast<double>(out[i]) - ref[i]));
+    max_ref = std::max(max_ref, std::fabs(ref[i]));
+  }
+  return max_abs / (max_ref + 1e-9) < tolerance;
+}
+
 }  // namespace
 
 int main() {
@@ -55,6 +83,11 @@ int main() {
           0.0f);
   REQUIRE(quixicore_cpu::fp16_to_fp32(quixicore_cpu::fp32_to_fp16(65504.0f)) ==
           65504.0f);
+  REQUIRE(quixicore_cpu::fp32_to_fp16(std::ldexp(1.0f, -14)) == 0x0400u);
+  REQUIRE(quixicore_cpu::fp32_to_fp16(std::ldexp(1.0f, -15)) == 0x0200u);
+  REQUIRE(quixicore_cpu::fp32_to_fp16(std::ldexp(1.0f, -24)) == 0x0001u);
+  REQUIRE(quixicore_cpu::fp32_to_fp16(std::ldexp(1.0f, -25)) == 0x0000u);
+  REQUIRE(quixicore_cpu::fp32_to_fp16(-std::ldexp(1.0f, -24)) == 0x8001u);
   {
     const float v = 0.0123456f;
     const float rt =
@@ -63,6 +96,7 @@ int main() {
   }
 
   // Argument validation.
+  float dummy = 0.0f;
   size_t size = 0;
   REQUIRE(quixicore_cpu::qgemv_packed_size(QuantFormat::kQ8_0, 4, 33, &size) ==
           Status::kInvalidShape);
@@ -70,14 +104,54 @@ int main() {
           Status::kInvalidShape);
   REQUIRE(quixicore_cpu::qgemv(QuantFormat::kQ8_0, nullptr, nullptr, nullptr,
                                4, 33) == Status::kInvalidShape);
+  REQUIRE(quixicore_cpu::qgemv_packed_size(QuantFormat::kQ8_0, 1, 32,
+                                           nullptr) ==
+          Status::kInvalidArgument);
+  REQUIRE(quixicore_cpu::qgemv_packed_size(QuantFormat::kQ8_0, 1LL << 62, 128,
+                                           &size) == Status::kInvalidShape);
+  REQUIRE(quixicore_cpu::qgemv(QuantFormat::kQ8_0, nullptr, &dummy, &dummy, 1,
+                               32) == Status::kInvalidArgument);
 
   // Packed size formula: 34 bytes per 32 weights.
   REQUIRE(quixicore_cpu::qgemv_packed_size(QuantFormat::kQ8_0, 4, 64, &size) ==
           Status::kOk);
   REQUIRE(size == 4 * 2 * 34);
 
-  // The contract path auto-selects fp32-activation variants only; the
-  // activation-quantizing dotprod_i8 path must never be the default.
+  // Packing must reject non-finite weights before any float-to-int cast.
+  {
+    std::vector<float> bad(32, 1.0f);
+    std::vector<uint8_t> packed(34);
+    bad[7] = std::numeric_limits<float>::quiet_NaN();
+    REQUIRE(quixicore_cpu::qgemv_pack(QuantFormat::kQ8_0, bad.data(), 1, 32,
+                                      packed.data()) ==
+            Status::kInvalidArgument);
+    bad[7] = std::numeric_limits<float>::infinity();
+    REQUIRE(quixicore_cpu::qgemv_pack(QuantFormat::kQ8_0, bad.data(), 1, 32,
+                                      packed.data()) ==
+            Status::kInvalidArgument);
+  }
+
+  // A scale below the minimum normal fp16 value is still a valid fp16
+  // subnormal. This used to pack d=0 and erase the entire block.
+  {
+    std::vector<float> w(32, 1e-3f);
+    std::vector<float> x(32, 1.0f);
+    std::vector<float> dq(32);
+    std::vector<float> y(1);
+    std::vector<uint8_t> packed(34);
+    REQUIRE(quixicore_cpu::qgemv_pack(QuantFormat::kQ8_0, w.data(), 1, 32,
+                                      packed.data()) == Status::kOk);
+    REQUIRE(quixicore_cpu::qgemv_unpack(QuantFormat::kQ8_0, packed.data(), 1,
+                                        32, dq.data()) == Status::kOk);
+    REQUIRE(dq[0] != 0.0f);
+    REQUIRE(std::fabs(dq[0] - w[0]) < 1e-5f);
+    REQUIRE(quixicore_cpu::qgemv(QuantFormat::kQ8_0, packed.data(), x.data(),
+                                 y.data(), 1, 32) == Status::kOk);
+    REQUIRE(std::fabs(y[0] - 32.0f * dq[0]) < 1e-6f);
+  }
+
+  // The contract path exposes fp32-activation variants only; the
+  // activation-quantizing dotprod_i8 path is never publicly selectable.
   const std::string variant =
       quixicore_cpu::qgemv_variant(QuantFormat::kQ8_0);
 #if defined(__aarch64__) || defined(_M_ARM64)
@@ -154,26 +228,14 @@ int main() {
       acc_dq[static_cast<size_t>(i)] = sum_dq;
       acc_orig[static_cast<size_t>(i)] = sum_orig;
     }
-    const auto max_rel = [n](const float* out, const std::vector<double>& ref) {
-      double max_abs = 0.0;
-      double max_r = 0.0;
-      for (long long i = 0; i < n; ++i) {
-        max_abs = std::fmax(
-            max_abs, std::fabs(out[static_cast<size_t>(i)] -
-                               ref[static_cast<size_t>(i)]));
-        max_r = std::fmax(max_r, std::fabs(ref[static_cast<size_t>(i)]));
-      }
-      return max_abs / (max_r + 1e-9);
-    };
-
     // Public entry: fp32-activation contract numerics on every platform.
-    REQUIRE(max_rel(y.data(), acc_dq) < 1e-4);
-    REQUIRE(max_rel(y.data(), acc_orig) < 0.03);
+    REQUIRE(all_close(y.data(), acc_dq, 1e-5, 1e-4));
+    REQUIRE(global_relative_below(y.data(), acc_orig, 0.03));
 
     // Scalar reference directly.
     std::vector<float> y_ref(static_cast<size_t>(n));
     quixicore_cpu::quant::q8_0_gemv_ref(blocks, x.data(), y_ref.data(), n, k);
-    REQUIRE(max_rel(y_ref.data(), acc_dq) < 1e-4);
+    REQUIRE(all_close(y_ref.data(), acc_dq, 1e-5, 1e-4));
 
 #if defined(__aarch64__) || defined(_M_ARM64)
     if (expect_neon) {
@@ -182,15 +244,15 @@ int main() {
       std::vector<float> y_neon(static_cast<size_t>(n));
       quixicore_cpu::quant::q8_0_gemv_neon(blocks, x.data(), y_neon.data(), n,
                                            k);
-      REQUIRE(max_rel(y_neon.data(), acc_dq) < 1e-4);
+      REQUIRE(all_close(y_neon.data(), acc_dq, 1e-5, 1e-4));
       REQUIRE(std::memcmp(y.data(), y_neon.data(), n * sizeof(float)) == 0);
     }
 #endif
 
 #if defined(QUIXICORE_CPU_HAVE_QGEMV_DOTPROD)
     if (quixicore_cpu::cpu_features().dotprod) {
-      // dotprod_i8 (env-forced only): quantizes activations to int8 blocks;
-      // its tight oracle is float64 GEMV over dequantized weights AND
+      // dotprod_i8 (internal experiment): quantizes activations to int8
+      // blocks; its tight oracle is float64 GEMV over dequantized weights AND
       // dequantized quantized activations (the int dot itself is exact).
       std::vector<float> yd(static_cast<size_t>(n));
       quixicore_cpu::quant::q8_0_gemv_dotprod(blocks, x.data(), yd.data(), n,
@@ -223,8 +285,8 @@ int main() {
         }
         acc_tight[static_cast<size_t>(i)] = sum;
       }
-      REQUIRE(max_rel(yd.data(), acc_tight) < 1e-5);
-      REQUIRE(max_rel(yd.data(), acc_orig) < 0.03);
+      REQUIRE(all_close(yd.data(), acc_tight, 1e-5, 1e-5));
+      REQUIRE(global_relative_below(yd.data(), acc_orig, 0.03));
 
       std::vector<float> yd2(static_cast<size_t>(n));
       quixicore_cpu::quant::q8_0_gemv_dotprod(blocks, x.data(), yd2.data(), n,

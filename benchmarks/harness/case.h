@@ -1,6 +1,9 @@
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <functional>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -11,13 +14,47 @@ enum class Preset { kSmoke, kQuick, kComprehensive };
 
 struct BuildCtx {
   Preset preset;
-  int threads;  // recorded in outputs; v1 cases are single-threaded
+  int threads;
 };
 
-struct CheckResult {
-  double max_abs_err;
-  double max_rel_err;  // max|diff| / (max|ref| + 1e-9), the repo convention
+struct Tolerance {
+  double atol;
+  double rtol;
 };
+
+// Mirrored from the umbrella registry/tolerances.yaml. Cases may use a
+// stricter operation-specific tolerance when their oracle excludes storage
+// quantization error (for example, qgemv against exactly dequantized weights).
+inline constexpr Tolerance kFp32Tolerance{1e-6, 1e-5};
+inline constexpr Tolerance kQuantizedTolerance{0.03, 0.03};
+
+struct CheckResult {
+  bool passed = true;
+  bool finite = true;
+  double max_abs_err = 0.0;
+  double max_rel_err = 0.0;
+};
+
+inline void check_value(CheckResult& result, double actual, double expected,
+                        Tolerance tolerance) {
+  if (!std::isfinite(actual) || !std::isfinite(expected)) {
+    result.passed = false;
+    result.finite = false;
+    result.max_abs_err = std::numeric_limits<double>::infinity();
+    result.max_rel_err = std::numeric_limits<double>::infinity();
+    return;
+  }
+  const double diff = std::fabs(actual - expected);
+  const double ref_abs = std::fabs(expected);
+  result.max_abs_err = std::max(result.max_abs_err, diff);
+  // Keep the reporting metric finite near zero; pass/fail still uses the
+  // standard elementwise atol + rtol*|ref| predicate below.
+  const double rel = diff / std::max(ref_abs, tolerance.atol);
+  result.max_rel_err = std::max(result.max_rel_err, rel);
+  if (diff > tolerance.atol + tolerance.rtol * ref_abs) {
+    result.passed = false;
+  }
+}
 
 // Runtime half of a case. The closures own the buffers, so destroying the
 // body after timing bounds peak memory to one live case at a time.

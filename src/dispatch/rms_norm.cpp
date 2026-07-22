@@ -4,6 +4,8 @@
 
 #include "quixicore_cpu/rms_norm.h"
 
+#include <climits>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 
@@ -54,8 +56,12 @@ const Variant& resolve() {
 
 Status rms_norm(const float* x, const float* weight, float* y, long long rows,
                 long long hidden, float eps) {
-  if (rows <= 0 || hidden <= 0 || !(eps >= 0.0f)) {
+  if (rows <= 0 || hidden <= 0 || !std::isfinite(eps) || eps < 0.0f ||
+      rows > LLONG_MAX / hidden) {
     return Status::kInvalidShape;
+  }
+  if (x == nullptr || weight == nullptr || y == nullptr) {
+    return Status::kInvalidArgument;
   }
   resolve().fn(x, weight, y, rows, hidden, eps);
   return Status::kOk;

@@ -7,16 +7,23 @@ backend coverage status.
 ## Current Harness Index
 
 `quixicore_cpu_bench` cases available for baselining (see
-`benchmarks/README.md`). Both are system probes — not kernel baselines and
-not contract kernels:
+`benchmarks/README.md`):
 
 | Case | What it measures | Role | Reproduce |
 |---|---|---|---|
 | `mem_triad` | Single-thread STREAM-triad bandwidth, 96 KiB - 768 MiB working sets | Machine memory roofline for judging memory-bound kernels | `scripts/bench --preset quick --kernel mem_triad` |
 | `sgemv_naive` | Naive scalar f32 GEMV on `quant_matmul` m=1 shapes | Reference semantics future GEMV variants must beat | `scripts/bench --preset quick --kernel sgemv_naive` |
+| `qgemv` | Public q8_0 GEMV plus scalar/decomposed references | Quantized decode baseline | `scripts/bench --preset quick --kernel qgemv` |
+| `rms_norm` | Public f32 RMSNorm plus scalar reference | Norm baseline | `scripts/bench --preset quick --kernel rms_norm` |
+| `contract_ops` | Softmax, causal attention, MoE routing, Mamba scan, q8_0 QGEMM | Representative sibling-port baselines | `scripts/bench --preset quick --kernel contract_ops` |
 
 | Date | Kernel | Dtype / Format | Shape Set | Target | Command | Median | Min / Max or Variance | Artifact | Notes |
 |---|---|---|---|---|---|---:|---|---|---|
+| 2026-07-22 | softmax | f32 | R512 H4096 | Apple M5 Max, 1 / 6 threads | `quixicore_cpu_bench --preset quick --kernel contract_ops --threads {1,6}` | 2.571875 / 0.549761 ms | CV 0.0450 / 0.0463 | `perf/results/2026-07-22/all-kernels-final-{t1,t6}/` | scalar baseline 3.487917 ms at t1; candidate |
+| 2026-07-22 | causal attention | f32 | H8 S128 D64 | Apple M5 Max, 1 / 6 threads | same | 2.570625 / 0.555919 ms | CV 0.0156 / 0.0993 | same | materialized scalar baseline 2.677979 ms at t1; candidate |
+| 2026-07-22 | MoE top-k routing | f32 | T1024 E64 K4 | Apple M5 Max, 1 / 6 threads | same | 0.156679 / 0.151962 ms | CV 0.0936 / 0.0506 | same | semantically equivalent full-sort baseline 0.827618 ms at t1; serial candidate |
+| 2026-07-22 | Mamba selective scan | f32 | C256 S512 N16 | Apple M5 Max, 1 / 6 threads | same | 3.560417 / 0.773006 ms | CV 0.0172 / 0.0550 | same | serial baseline 3.586625 ms at t1; candidate |
+| 2026-07-22 | q8_0 QGEMM | q8_0 weights / f32 activation | M16 N2048 K2048 | Apple M5 Max, 1 / 6 threads | same | 3.815875 / 1.377552 ms | CV 0.0161 / 0.0968 | same | dequantized scalar baseline 31.739709 ms at t1; candidate |
 | 2026-07-07 | qgemv (`neon`, contract path) | q8_0 | quant_matmul m=1 N4096 K4096 | Apple M4 Max, 1 thread, NEON f32-act | `scripts/bench --preset quick --kernel qgemv` | 1.0344 ms | CV 0.027 | `perf/results/2026-07-07/033244-quick/` | family numerics (dequant W x f32 x); 17.2 W-GB/s; in-progress |
 | 2026-07-07 | qgemv (`neon`, contract path) | q8_0 | quant_matmul m=1 N8192 K8192 | Apple M4 Max, 1 thread, NEON f32-act | `scripts/bench --preset quick --kernel qgemv` | 4.1164 ms | CV 0.022 | `perf/results/2026-07-07/033244-quick/` | family numerics; 17.3 W-GB/s; in-progress |
 | 2026-07-07 | qgemv (`dotprod_i8`, 8 threads) | q8_0 | quant_matmul m=1 N4096 K4096 | Apple M4 Max, 8 threads, NEON DotProd | `scripts/bench --preset quick --kernel qgemv --threads 8` | 0.0679 ms | CV 0.024 | `perf/results/2026-07-07/030745-quick/` | 263 W-GB/s ~= aggregate DRAM roofline; env-forced variant since the 2026-07-07 realignment (previews qgemv_w8a8) |
@@ -28,4 +35,3 @@ not contract kernels:
 | 2026-07-07 | qgemv (`ref`) | q8_0 | quant_matmul m=1 N4096 K4096 | Apple M4 Max, 1 thread, baseline flags | `scripts/bench --preset quick --kernel qgemv` | 4.3189 ms | CV 0.014 | `perf/results/2026-07-07/022305-quick/` | scalar reference; in-progress, not claimed supported |
 | 2026-07-07 | qgemv (`ref`) | q8_0 | quant_matmul m=1 N8192 K8192 | Apple M4 Max, 1 thread, baseline flags | `scripts/bench --preset quick --kernel qgemv` | 17.2801 ms | CV 0.022 | `perf/results/2026-07-07/022305-quick/` | scalar reference; in-progress, not claimed supported |
 | 2026-07-07 | qgemv (`ref`) | q8_0 | quant_matmul m=1 N16384 K4096 | Apple M4 Max, 1 thread, baseline flags | `scripts/bench --preset quick --kernel qgemv` | 17.1908 ms | CV 0.011 | `perf/results/2026-07-07/022305-quick/` | scalar reference; in-progress, not claimed supported |
-

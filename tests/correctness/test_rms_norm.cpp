@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -39,6 +40,18 @@ class Rng {
   uint32_t state_;
 };
 
+bool all_close(const float* out, const std::vector<double>& ref, double atol,
+               double rtol) {
+  for (size_t i = 0; i < ref.size(); ++i) {
+    if (!std::isfinite(out[i]) || !std::isfinite(ref[i]) ||
+        std::fabs(static_cast<double>(out[i]) - ref[i]) >
+            atol + rtol * std::fabs(ref[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 int main() {
@@ -53,6 +66,13 @@ int main() {
           Status::kInvalidShape);
   REQUIRE(quixicore_cpu::rms_norm(&dummy, &dummy, &dummy, 1, 4, -1.0f) ==
           Status::kInvalidShape);
+  REQUIRE(quixicore_cpu::rms_norm(&dummy, &dummy, &dummy, 1, 4,
+                                  std::numeric_limits<float>::infinity()) ==
+          Status::kInvalidShape);
+  REQUIRE(quixicore_cpu::rms_norm(nullptr, &dummy, &dummy, 1, 4, kEps) ==
+          Status::kInvalidArgument);
+  REQUIRE(quixicore_cpu::rms_norm(&dummy, &dummy, &dummy, 1LL << 62, 4,
+                                  kEps) == Status::kInvalidShape);
 
   const std::string variant = quixicore_cpu::rms_norm_variant();
 #if defined(__aarch64__) || defined(_M_ARM64)
@@ -105,31 +125,21 @@ int main() {
             w[static_cast<size_t>(j)] * scale;
       }
     }
-    const auto max_rel = [&](const float* out) {
-      double max_abs = 0.0;
-      double max_ref = 0.0;
-      for (size_t i = 0; i < oracle.size(); ++i) {
-        max_abs = std::fmax(max_abs, std::fabs(out[i] - oracle[i]));
-        max_ref = std::fmax(max_ref, std::fabs(oracle[i]));
-      }
-      return max_abs / (max_ref + 1e-9);
-    };
-
     // Public entry at the umbrella fp32 tolerance.
-    REQUIRE(max_rel(y.data()) < 1e-5);
+    REQUIRE(all_close(y.data(), oracle, 1e-6, 1e-5));
 
     // Scalar reference directly (float64 accumulation: near-oracle).
     std::vector<float> y_ref(static_cast<size_t>(rows * hidden));
     quixicore_cpu::norms::rms_norm_ref(x.data(), w.data(), y_ref.data(), rows,
                                        hidden, kEps);
-    REQUIRE(max_rel(y_ref.data()) < 1e-6);
+    REQUIRE(all_close(y_ref.data(), oracle, 1e-7, 1e-6));
 
 #if defined(__aarch64__) || defined(_M_ARM64)
     if (expect_neon) {
       std::vector<float> y_neon(static_cast<size_t>(rows * hidden));
       quixicore_cpu::norms::rms_norm_neon(x.data(), w.data(), y_neon.data(),
                                           rows, hidden, kEps);
-      REQUIRE(max_rel(y_neon.data()) < 1e-5);
+      REQUIRE(all_close(y_neon.data(), oracle, 1e-6, 1e-5));
       // The dispatched public entry must be exactly this variant.
       REQUIRE(std::memcmp(y.data(), y_neon.data(),
                           static_cast<size_t>(rows * hidden) *
@@ -144,6 +154,45 @@ int main() {
                                     kEps) == Status::kOk);
     for (long long j = 0; j < hidden; ++j) {
       REQUIRE(yz[static_cast<size_t>(j)] == 0.0f);
+    }
+  }
+
+  // The optimized f32 fast reduction falls back to f64 only for exceptional
+  // magnitude rows, avoiding overflow/underflow without taxing model values.
+  for (const float magnitude : {1e20f, 1e30f}) {
+    constexpr long long kHidden = 32;
+    std::vector<float> x(static_cast<size_t>(kHidden), magnitude);
+    std::vector<float> w(static_cast<size_t>(kHidden), 1.0f);
+    std::vector<float> y(static_cast<size_t>(kHidden));
+    REQUIRE(quixicore_cpu::rms_norm(x.data(), w.data(), y.data(), 1, kHidden,
+                                    kEps) == Status::kOk);
+    for (const float value : y) {
+      REQUIRE(std::isfinite(value));
+      REQUIRE(std::fabs(value - 1.0f) < 1e-5f);
+    }
+  }
+  {
+    constexpr long long kHidden = 32;
+    std::vector<float> x(static_cast<size_t>(kHidden), 1e-30f);
+    std::vector<float> w(static_cast<size_t>(kHidden), 1.0f);
+    std::vector<float> y(static_cast<size_t>(kHidden));
+    REQUIRE(quixicore_cpu::rms_norm(x.data(), w.data(), y.data(), 1, kHidden,
+                                    0.0f) == Status::kOk);
+    for (const float value : y) {
+      REQUIRE(std::isfinite(value));
+      REQUIRE(std::fabs(value - 1.0f) < 1e-5f);
+    }
+  }
+  {
+    constexpr long long kHidden = 32;
+    std::vector<float> x(static_cast<size_t>(kHidden), 1e30f);
+    std::vector<float> w(static_cast<size_t>(kHidden), 1e20f);
+    std::vector<float> y(static_cast<size_t>(kHidden));
+    REQUIRE(quixicore_cpu::rms_norm(x.data(), w.data(), y.data(), 1, kHidden,
+                                    kEps) == Status::kOk);
+    for (const float value : y) {
+      REQUIRE(std::isfinite(value));
+      REQUIRE(std::fabs(value / 1e20f - 1.0f) < 1e-5f);
     }
   }
 

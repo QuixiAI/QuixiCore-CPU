@@ -1,11 +1,14 @@
 # QuixiCore CPU
 
-QuixiCore CPU is the planned host CPU backend for the QuixiCore kernel contract.
-It is intended for CPU-resident AI inference paths built around SIMD, matrix
-extensions, cache-aware packing, and thread scheduling.
+QuixiCore CPU is the experimental host CPU backend for the QuixiCore kernel
+contract. It provides portable f32 reference paths for every active v0.1
+kernel family, plus q8_0 GEMV/GEMM and selected sibling-backend utilities.
+CPU-resident implementations use runtime ISA dispatch and a persistent
+fork-join thread pool behind the shared API semantics.
 
-Current status: initialized scaffold. No QuixiCore kernel family is claimed
-supported yet.
+Current status: correctness-tested reference implementation. Family-level
+support remains conservative until each operation, dtype, and registry shape
+has its own benchmark evidence; see `docs/sibling-port-matrix.md`.
 
 ## Scope
 
@@ -16,9 +19,10 @@ The CPU backend targets:
 - `aarch64`: scalar baseline first, then NEON, DotProd, I8MM, SVE, and SME
   variants when hardware and benchmark evidence are available.
 
-The first useful kernel work should focus on LLM inference paths where CPUs have
-a realistic role: quantized GEMV, quantized GEMM, RMSNorm, LayerNorm, softmax,
-sampling, embedding lookup, KV cache utilities, and small-batch decode support.
+The current portable surface includes norms, activations, attention and decode,
+q8_0 projection, sampling/serving, Mamba selective scan, MoE routing/grouped
+GEMM, and AdamW. SIMD specialization beyond the existing aarch64 RMSNorm and
+q8_0 GEMV routes remains future performance work.
 
 ## Repository Layout
 
@@ -77,4 +81,3 @@ Kernel support requires:
 
 Scaffold-only changes may skip kernel benchmarking, but they must not claim a
 speedup or supported kernel.
-

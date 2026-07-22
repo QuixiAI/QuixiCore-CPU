@@ -24,6 +24,11 @@
 namespace qcb {
 namespace {
 
+// This system probe intentionally uses a long sequential f32 accumulation,
+// rather than a contract kernel's optimized reduction. Keep a finite, useful
+// gate while allowing its expected O(K*u) rounding error at registry shapes.
+constexpr Tolerance kNaiveAccumTolerance{5e-4, 1e-4};
+
 struct Buffers {
   AlignedBuffer<float> w;
   AlignedBuffer<float> x;
@@ -108,18 +113,16 @@ CaseDecl make_sgemv_decl(long long n, long long k) {
       const float* y = bufs->y.get();
       const long long n = bufs->n;
       const long long k = bufs->k;
-      double max_abs = 0.0;
-      double max_ref = 0.0;
+      CheckResult check;
       for (long long i = 0; i < n; ++i) {
         const float* row = w + i * k;
         double acc = 0.0;
         for (long long j = 0; j < k; ++j) {
           acc += static_cast<double>(row[j]) * static_cast<double>(x[j]);
         }
-        max_abs = std::max(max_abs, std::fabs(y[i] - acc));
-        max_ref = std::max(max_ref, std::fabs(acc));
+        check_value(check, y[i], acc, kNaiveAccumTolerance);
       }
-      return CheckResult{max_abs, max_abs / (max_ref + 1e-9)};
+      return check;
     };
     return body;
   };

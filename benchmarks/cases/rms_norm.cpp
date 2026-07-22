@@ -104,8 +104,7 @@ CaseDecl make_rms_norm_decl(long long rows, long long hidden) {
       const float* x = bufs->x.get();
       const float* w = bufs->w.get();
       const float* y = bufs->y.get();
-      double max_abs = 0.0;
-      double max_ref = 0.0;
+      CheckResult check;
       for (long long r = 0; r < bufs->rows; ++r) {
         double sumsq = 0.0;
         for (long long j = 0; j < bufs->hidden; ++j) {
@@ -118,12 +117,11 @@ CaseDecl make_rms_norm_decl(long long rows, long long hidden) {
         for (long long j = 0; j < bufs->hidden; ++j) {
           const double ref = static_cast<double>(x[r * bufs->hidden + j]) *
                              w[j] * scale;
-          max_abs =
-              std::fmax(max_abs, std::fabs(y[r * bufs->hidden + j] - ref));
-          max_ref = std::fmax(max_ref, std::fabs(ref));
+          check_value(check, y[r * bufs->hidden + j], ref,
+                      kFp32Tolerance);
         }
       }
-      return CheckResult{max_abs, max_abs / (max_ref + 1e-9)};
+      return check;
     };
     return body;
   };

@@ -9,12 +9,15 @@ implementation, test, and benchmark work.
 - Backend: `cpu`
 - Name: `QuixiCore CPU`
 - Contract target: `v0.1`
-- Status: `planned`
+- Status: `experimental`
 - Targets: `x86_64`, `aarch64`
 
-The local library currently reports no supported kernel families. Planned
-families are listed so tools and tests can verify naming against the umbrella
-contract without claiming implementation support.
+The local library deliberately reports no family as broadly supported yet.
+Every active v0.1 family has a portable f32 candidate implementation and
+correctness coverage, but dtype/format coverage and per-operation benchmark
+coverage are not broad enough for a family-wide claim. Planned-family names
+remain exposed so tools can verify them against the umbrella contract. The
+operation-level evidence matrix is in `docs/sibling-port-matrix.md`.
 
 ## Support Rule
 
@@ -49,4 +52,3 @@ backend follows them (verified 2026-07-07 against QuixiCore-Metal
 - Op naming follows the siblings (`qgemv`, `qgemm`, `rms_norm`,
   `softmax`, fused `_add` suffixes); the umbrella registry family keys
   (`quant_gemv`, ...) are labels, not op names.
-

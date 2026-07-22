@@ -51,6 +51,23 @@ int main() {
   quixicore_cpu::set_num_threads(4);
   REQUIRE(quixicore_cpu::num_threads() == 4);
 
+  // A freshly resized pool must not replay an old generation or skip the
+  // first job while its worker threads are still starting.
+  for (int repetition = 0; repetition < 32; ++repetition) {
+    quixicore_cpu::set_num_threads(1);
+    quixicore_cpu::set_num_threads(4);
+    std::vector<int> hits(257, 0);
+    quixicore_cpu::threading::parallel_ranges(
+        257, 1, [&](long long begin, long long end, int) {
+          for (long long i = begin; i < end; ++i) {
+            hits[static_cast<std::size_t>(i)] += 1;
+          }
+        });
+    for (const int hit : hits) {
+      REQUIRE(hit == 1);
+    }
+  }
+
   // Every index covered exactly once; ranges are disjoint so plain writes
   // are race-free.
   for (const long long count : {0LL, 1LL, 3LL, 4LL, 1000LL, 1001LL}) {

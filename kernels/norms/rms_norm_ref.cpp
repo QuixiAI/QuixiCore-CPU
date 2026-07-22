@@ -26,7 +26,9 @@ void rms_rows_ref(const float* x, const float* weight, float* y,
         1.0 / std::sqrt(sumsq / static_cast<double>(hidden) +
                         static_cast<double>(eps)));
     for (long long j = 0; j < hidden; ++j) {
-      yr[j] = xr[j] * weight[j] * scale;
+      // Normalize before applying weight. xr*weight can overflow even when
+      // the mathematically equivalent normalized result is finite.
+      yr[j] = (xr[j] * scale) * weight[j];
     }
   }
 }

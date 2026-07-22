@@ -11,6 +11,7 @@ add_executable(quixicore_cpu_bench
   harness/registry.cpp
   harness/report.cpp
   harness/timing.cpp
+  cases/contract_ops.cpp
   cases/mem_triad.cpp
   cases/qgemv.cpp
   cases/rms_norm.cpp

@@ -11,6 +11,7 @@
 #include <arm_neon.h>
 
 #include <cmath>
+#include <limits>
 
 #include "kernels/norms/rms_norm.h"
 #include "src/threading/thread_pool.h"
@@ -47,17 +48,35 @@ void rms_rows_neon(const float* x, const float* weight, float* y,
       sumsq += xr[j] * xr[j];
     }
 
-    const float scale =
-        1.0f / std::sqrt(sumsq / static_cast<float>(hidden) + eps);
+    // Keep the common model-value path identical and fast. If the f32 sum
+    // overflows or falls into the subnormal range, recompute this exceptional
+    // row in f64. Every finite f32 square and any practical row-length sum fit
+    // in f64, while normal inference values pay only this predictable branch.
+    float scale = 0.0f;
+    if (std::isfinite(sumsq) &&
+        sumsq >= std::numeric_limits<float>::min()) {
+      // Preserve the original f32 arithmetic and code generation on the hot
+      // path; the robustness work must not tax ordinary inference rows.
+      scale = 1.0f / std::sqrt(sumsq / static_cast<float>(hidden) + eps);
+    } else {
+      double sumsq64 = 0.0;
+      for (long long k = 0; k < hidden; ++k) {
+        const double v = static_cast<double>(xr[k]);
+        sumsq64 += v * v;
+      }
+      const double mean_square = sumsq64 / static_cast<double>(hidden);
+      scale = static_cast<float>(
+          1.0 / std::sqrt(mean_square + static_cast<double>(eps)));
+    }
     const float32x4_t vscale = vdupq_n_f32(scale);
     j = 0;
     for (; j + 3 < hidden; j += 4) {
       const float32x4_t vx = vld1q_f32(xr + j);
       const float32x4_t vw = vld1q_f32(weight + j);
-      vst1q_f32(yr + j, vmulq_f32(vmulq_f32(vx, vw), vscale));
+      vst1q_f32(yr + j, vmulq_f32(vmulq_f32(vx, vscale), vw));
     }
     for (; j < hidden; ++j) {
-      yr[j] = xr[j] * weight[j] * scale;
+      yr[j] = (xr[j] * scale) * weight[j];
     }
   }
 }

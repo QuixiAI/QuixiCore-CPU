@@ -30,7 +30,7 @@ Always benchmark a `Release` build. On Windows, run
 --iters N                            timed samples (default 20)
 --min-sample-ms X                    min time per sample (default 2.0)
 --no-check                           skip the correctness oracle
---threads N                          recorded only; v1 cases are single-threaded
+--threads N                          total worker count (default 1)
 --out-dir PATH                       default perf/results/<date>/<time>-<preset>/
 ```
 
@@ -62,15 +62,17 @@ Each run writes three files to `perf/results/YYYY-MM-DD/HHMMSS-<preset>/`
   kernel list, wall time.
 - `results.jsonl` — one schema-1 row per case: `kernel`, `variant`,
   `shape{}`, `dtype`, `format`, `status` (`ok`/`skip`/`error`), `notes`,
-  `max_abs_err`, `max_rel_err`, `target_ms`, `target_p20_ms`,
+  `check_passed`, `max_abs_err`, `max_rel_err`, `target_ms`, `target_p20_ms`,
   `target_p80_ms`, `target_cv`, `batch`, `baselines{name:{ms,speedup}}`,
   and `gbps` / `weight_gbps` / `gflops` when applicable.
 - `summary.md` — human-readable table of the same rows.
 
 ## Current Cases
 
-Both current cases are **system-characterization probes, not contract
-kernels** — no kernel family support is claimed or implied:
+The harness includes two system/reference probes, the existing q8_0 GEMV and
+RMSNorm cases, and a representative cross-family contract batch. Every checked
+case must pass its finite, elementwise tolerance gate before timing starts; a
+failed oracle produces an `error` row and a nonzero process exit:
 
 - `mem_triad` — STREAM-triad bandwidth probe (`a[i] = b[i] + s*c[i]`,
   single-thread f32) over a working-set ladder from 96 KiB to 768 MiB,
@@ -82,6 +84,17 @@ kernels** — no kernel family support is claimed or implied:
   plus `decode_small` hidden sizes. This is the reference semantics future
   ISA/quantized GEMV variants must beat; auto-vectorization at baseline
   Release flags is part of the definition.
+- `qgemv` — public q8_0 GEMV on the contract `quant_matmul` m=1 shapes,
+  checked against float64 accumulation over exactly dequantized weights.
+  Contract-compatible f32-activation variants are timed; the internal
+  activation-quantizing dot-product experiment remains a named baseline only.
+- `rms_norm` — public f32 RMSNorm over `decode_small` shapes plus an R512
+  throughput stress shape, checked against a float64 oracle.
+- `contract_ops` — portable f32 softmax, causal attention, MoE top-k routing,
+  Mamba selective scan, and q8_0 quantized GEMM. Each target has an independent
+  scalar or decomposed baseline and a correctness gate; these are
+  representative performance paths for the sibling-port batch, not an
+  ISA-tuning claim.
 
 ## Adding A Kernel Case
 

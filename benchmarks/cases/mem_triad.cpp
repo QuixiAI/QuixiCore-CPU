@@ -103,15 +103,13 @@ CaseDecl make_triad_decl(long long ws_bytes) {
         a[i] = b[i] + kScale * c[i];
       }
       do_not_optimize(a);
-      double max_abs = 0.0;
-      double max_ref = 0.0;
+      CheckResult check;
       for (long long i = 0; i < n; ++i) {
         const double ref = static_cast<double>(b[i]) +
                            static_cast<double>(kScale) * c[i];
-        max_abs = std::max(max_abs, std::fabs(a[i] - ref));
-        max_ref = std::max(max_ref, std::fabs(ref));
+        check_value(check, a[i], ref, kFp32Tolerance);
       }
-      return CheckResult{max_abs, max_abs / (max_ref + 1e-9)};
+      return check;
     };
     return body;
   };

@@ -50,7 +50,12 @@ inline uint16_t fp32_to_fp16(float f) {
     if (x < 0x33000000u) {
       return sign;  // rounds to signed zero
     }
-    const uint32_t shift = 126u - (x >> 23);
+    // A float with exponent e must move its implicit leading 1 right by
+    // (113 - e) additional places beyond the normal 13-bit f32->f16
+    // mantissa truncation. Keeping the two shifts separate here is
+    // important: using 126-e and then adding 13 again both zeros valid half
+    // subnormals and can shift a uint32_t by 32 or more (undefined behavior).
+    const uint32_t shift = 113u - (x >> 23);
     const uint32_t mant = (x & 0x7FFFFFu) | 0x800000u;
     uint16_t h = static_cast<uint16_t>(sign | (mant >> (shift + 13)));
     const uint32_t rem = mant & ((1u << (shift + 13)) - 1u);

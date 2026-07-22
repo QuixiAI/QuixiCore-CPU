@@ -11,7 +11,7 @@
 
 namespace quixicore_cpu::quant {
 
-void q8_0_pack_ref(const float* weights, long long n, long long k,
+bool q8_0_pack_ref(const float* weights, long long n, long long k,
                    BlockQ8_0* packed) {
   const long long blocks_per_row = k / kQ8_0BlockSize;
   for (long long i = 0; i < n; ++i) {
@@ -21,6 +21,9 @@ void q8_0_pack_ref(const float* weights, long long n, long long k,
       const float* src = row + b * kQ8_0BlockSize;
       float amax = 0.0f;
       for (long long j = 0; j < kQ8_0BlockSize; ++j) {
+        if (!std::isfinite(src[j])) {
+          return false;
+        }
         amax = std::fmax(amax, std::fabs(src[j]));
       }
       const float d = amax / 127.0f;
@@ -34,6 +37,7 @@ void q8_0_pack_ref(const float* weights, long long n, long long k,
       }
     }
   }
+  return true;
 }
 
 void q8_0_unpack_ref(const BlockQ8_0* packed, long long n, long long k,

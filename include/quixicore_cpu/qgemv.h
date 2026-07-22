@@ -8,6 +8,9 @@ namespace quixicore_cpu {
 
 enum class QuantFormat {
   kQ8_0,  // GGUF q8_0: 32-element blocks, fp16 scale + 32 int8 values
+  kQ4_0,  // GGUF q4_0: 32-element blocks, fp16 scale + 16 packed nibbles
+          // (-8 offset). Weight-only qgemv keeps f32 activations; the
+          // activation-quantizing integer path for kQ4_0 lives in qgemv_w8a8.
 };
 
 // Quantized GEMV, QuixiCore family contract: out = dequantize(wq) @ x with
@@ -31,8 +34,9 @@ Status qgemv_unpack(QuantFormat format, const void* packed, long long n,
 
 // y = dequantize(wq) @ x with packed W (n x k), f32 x (k), f32 y (n).
 // Deterministic. The kernel variant is resolved once per process from
-// runtime CPU features; QUIXICORE_CPU_QGEMV_VARIANT forces a named variant
-// for testing and benchmarking.
+// runtime CPU features; QUIXICORE_CPU_QGEMV_VARIANT forces a named
+// contract-compatible variant for testing and benchmarking. Internal
+// activation-quantizing experiments are deliberately not selectable here.
 Status qgemv(QuantFormat format, const void* packed, const float* x, float* y,
              long long n, long long k);
 

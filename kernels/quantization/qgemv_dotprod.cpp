@@ -8,9 +8,9 @@
 // umbrella quantized tolerance (see tests/correctness/test_qgemv.cpp).
 //
 // NOTE: activation quantization diverges from the family qgemv contract
-// (dequantize(wq) @ x with full-precision activations), so dispatch never
-// auto-selects this variant — QUIXICORE_CPU_QGEMV_VARIANT=dotprod_i8 only.
-// It previews the future qgemv_w8a8 twin op the sibling backends expose.
+// (dequantize(wq) @ x with full-precision activations), so public dispatch
+// never exposes this variant. It is an internal benchmark baseline that
+// previews the future qgemv_w8a8 twin op the sibling backends expose.
 //
 // This file is added to the build only when the toolchain can target
 // dotprod (cmake/QuixiCoreCPUFeatures.cmake) and is called only after

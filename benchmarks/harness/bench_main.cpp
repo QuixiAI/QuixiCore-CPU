@@ -143,6 +143,13 @@ CaseResult run_case(const CaseDecl& decl, const Options& opts) {
     if (opts.check && body.check) {
       result.check = body.check();
       result.checked = true;
+      if (!result.check.passed) {
+        result.status = "error";
+        result.error = result.check.finite
+                           ? "correctness tolerance exceeded"
+                           : "correctness check produced a non-finite value";
+        return result;
+      }
     }
     result.timing =
         time_thunk(body.target, opts.warmup, opts.iters, opts.min_sample_ms);
@@ -192,9 +199,10 @@ void print_progress(const CaseResult& result) {
     }
     std::printf("\n");
   } else {
+    const std::string& detail =
+        result.skip_reason.empty() ? result.error : result.skip_reason;
     std::printf("%-32s %s%s%s\n", label.c_str(), result.status.c_str(),
-                result.skip_reason.empty() ? "" : ": ",
-                result.skip_reason.c_str());
+                detail.empty() ? "" : ": ", detail.c_str());
   }
   std::fflush(stdout);
 }

@@ -21,15 +21,30 @@ option(QUIXICORE_CPU_BUILD_BENCHMARKS "Build QuixiCore CPU benchmark harness" ON
 add_library(quixicore_cpu STATIC
   src/backend.cpp
   src/dispatch/qgemv.cpp
+  src/dispatch/qgemv_w8a8.cpp
   src/dispatch/rms_norm.cpp
   src/runtime/cpu_features.cpp
   src/runtime/cpu_features_x86_64.cpp
   src/runtime/cpu_features_aarch64.cpp
   src/threading/thread_pool.cpp
+  kernels/activations/activations_ref.cpp
+  kernels/attention/attention_ref.cpp
+  kernels/linear_attention/linear_attention_ref.cpp
+  kernels/matmul/dense_gemm_ref.cpp
+  kernels/moe/moe_ref.cpp
+  kernels/norms/layer_norm_ref.cpp
   kernels/norms/rms_norm_ref.cpp
   kernels/norms/rms_norm_neon.cpp
+  kernels/optimizers/adamw_ref.cpp
   kernels/quantization/qgemv_ref.cpp
   kernels/quantization/qgemv_neon.cpp
+  kernels/quantization/qgemv_w8a8_ref.cpp
+  kernels/quantization/qgemm_ref.cpp
+  kernels/sampling/sampling_ref.cpp
+  kernels/serving/serving_ref.cpp
+  kernels/softmax/softmax_ref.cpp
+  kernels/ssm/selective_scan_ref.cpp
+  kernels/utils/utils_ref.cpp
 )
 add_library(QuixiCoreCPU::quixicore_cpu ALIAS quixicore_cpu)
 
@@ -83,6 +98,15 @@ if(QUIXICORE_CPU_BUILD_TESTS)
       PRIVATE QUIXICORE_CPU_HAVE_QGEMV_DOTPROD=1)
   endif()
   add_test(NAME qgemv COMMAND test_qgemv)
+  add_test(NAME qgemv_forced_dotprod_contract COMMAND test_qgemv)
+  set_tests_properties(qgemv_forced_dotprod_contract PROPERTIES
+    ENVIRONMENT "QUIXICORE_CPU_QGEMV_VARIANT=dotprod_i8")
+
+  add_executable(test_qgemv_w8a8 tests/correctness/test_qgemv_w8a8.cpp)
+  target_link_libraries(test_qgemv_w8a8 PRIVATE QuixiCoreCPU::quixicore_cpu)
+  target_include_directories(test_qgemv_w8a8
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # kernel-internal headers
+  add_test(NAME qgemv_w8a8 COMMAND test_qgemv_w8a8)
 
   add_executable(test_rms_norm tests/correctness/test_rms_norm.cpp)
   target_link_libraries(test_rms_norm PRIVATE QuixiCoreCPU::quixicore_cpu)
@@ -90,11 +114,21 @@ if(QUIXICORE_CPU_BUILD_TESTS)
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # kernel-internal headers
   add_test(NAME rms_norm COMMAND test_rms_norm)
 
+  add_executable(test_ops tests/correctness/test_ops.cpp)
+  target_link_libraries(test_ops PRIVATE QuixiCoreCPU::quixicore_cpu)
+  add_test(NAME ops COMMAND test_ops)
+
   add_executable(test_threading tests/unit/test_threading.cpp)
   target_link_libraries(test_threading PRIVATE QuixiCoreCPU::quixicore_cpu)
   target_include_directories(test_threading
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # kernel-internal headers
   add_test(NAME threading COMMAND test_threading)
+
+  add_executable(test_benchmark_check tests/unit/test_benchmark_check.cpp)
+  target_compile_features(test_benchmark_check PRIVATE cxx_std_20)
+  target_include_directories(test_benchmark_check
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks)
+  add_test(NAME benchmark_check COMMAND test_benchmark_check)
 
   if(QUIXICORE_CPU_BUILD_TOOLS)
     add_test(NAME cpu_info_tool COMMAND quixicore_cpu_info)

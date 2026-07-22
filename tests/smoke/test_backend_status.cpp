@@ -22,7 +22,7 @@ int main() {
   REQUIRE(metadata.repo == "QuixiAI/QuixiCore-CPU");
   REQUIRE(metadata.umbrella == "QuixiAI/QuixiCore");
   REQUIRE(metadata.contract == "v0.1");
-  REQUIRE(metadata.status == "planned");
+  REQUIRE(metadata.status == "experimental");
   REQUIRE(metadata.targets.size() == 2);
 
   const auto supported = quixicore_cpu::supported_kernel_families();

@@ -23,11 +23,150 @@ performance claim must add a focused optimization entry here.
 
 | Date | Kernel | Dtype / Format | Shape Set | Target | Baseline | Candidate | Decision | Evidence |
 |---|---|---|---|---|---:|---:|---|---|
+| 2026-07-22 | qgemv_w8a8 (q4_0 weight x int8 activation) | q4_0 / int8 | quant_matmul m=1 (validation pending) | portable ref anchor | — | — | landed ref + fp64-oracle test; perf pending in maintainer link env | see "2026-07-22: qgemv_w8a8" section below |
+| 2026-07-22 | sibling semantic port batch | f32 / q8_0 | five representative quick shapes | aarch64 portable + existing NEON q8_0 route, 1/6 threads | scalar/decomposed 0.8276-31.7397 ms | 0.1520-3.8159 ms | keep portable candidates and parallel routes; no new ISA or family-wide support claim | `perf/results/2026-07-22/all-kernels-final-{t1,t6}/` |
+| 2026-07-21 | qgemv + rms_norm correctness hardening | q8_0 / f32 | quant_matmul m=1 + decode_small + R512 stress | aarch64 NEON | qgemv 0.990 ms; RMS R512 0.259 ms | qgemv 0.969 ms; RMS R512 0.260 ms | keep; contract fixes with no material hot-path regression | `perf/results/2026-07-21/review-{baseline,candidate-final,rms-baseline-repeat,rms-candidate-repeat}/` |
 | 2026-07-07 | qgemv (contract realignment) | q8_0 | quant_matmul m=1 (4096x4096, 8192x8192, 16384x4096) | aarch64 NEON f32-act | 4.127 ms | 1.034 ms | keep neon as contract default (4.0x over ref, family numerics); dotprod_i8 demoted to env-only | `perf/results/2026-07-07/033244-quick/` |
 | 2026-07-07 | quant_gemv + rms_norm (threading) | q8_0 / f32 | quant_matmul m=1 + R512 stress | aarch64, 8-12 threads | 0.303 ms | 0.068 ms | keep row-partitioned threading (4.3-4.5x, saturates aggregate DRAM BW) | `perf/results/2026-07-07/0307{23,45,51}-quick/` |
 | 2026-07-07 | rms_norm | f32 | decode_small (R1-R4, H2048/H4096) + R512 stress | aarch64 NEON | 2.26 us | 0.52 us | keep neon variant (4.3-4.6x over ref) | `perf/results/2026-07-07/024347-quick/` |
 | 2026-07-07 | quant_gemv | q8_0 | quant_matmul m=1 (4096x4096, 8192x8192, 16384x4096) | aarch64 NEON DotProd | 4.314 ms | 0.301 ms | keep dotprod variant (14.4x, 51% of DRAM roofline) | `perf/results/2026-07-07/023619-quick/` |
 | 2026-07-07 | quant_gemv | q8_0 | quant_matmul m=1 (4096x4096, 8192x8192, 16384x4096) | aarch64 baseline flags | 4.319 ms | 4.441 ms | reject multi-acc candidate; keep plain loop as ref | `perf/results/2026-07-07/022305-quick/` |
+
+## 2026-07-22: sibling semantic port batch
+
+Status: candidate.
+
+Current implementation: portable f32 reference entry points now cover each of
+the 16 active umbrella v0.1 families. The batch adds activations, softmax,
+LayerNorm, dense and grouped GEMM, RoPE, dense/GQA/paged/MLA attention,
+sampling, beam/speculative decode, serving utilities, linear attention, Mamba
+S6 scan, MoE routing, AdamW, and a q8_0 QGEMM/LM-head composition. Existing
+q8_0 GEMV and RMSNorm routes remain in place. GPU tiling variants were
+collapsed into shared operation semantics; only f32 and q8_0 are in scope.
+
+Current public route: `include/quixicore_cpu/ops.h`, `qgemv.h`, `qgemm.h`, and
+`rms_norm.h`. Independent portable implementations live under `kernels/` and
+parallelize disjoint rows/heads/channels through the existing thread pool.
+
+References inspected: umbrella `registry/kernels.yaml`,
+`registry/quant-formats.yaml`, `registry/benchmark-shapes.yaml`,
+`registry/tolerances.yaml`, all `matrices/` and kernel/format specs; sibling
+Metal, XPU, CUDA, and ROCm manifests and public operation surfaces.
+
+Correctness: Release CTest 10/10; ASan + UBSan + float-cast-overflow CTest
+10/10; x86_64 cross-build and full Rosetta CTest 10/10. The operation suite has
+independent known-value or float64 checks for every new public entry point.
+Thread-pool resize/startup generation ordering was fixed after sanitizer
+stress exposed one intermittent early-completion failure; a 32-resize
+regression test and 100 repeated sanitizer threading runs pass.
+
+Baseline: each benchmark case carries an independent scalar or decomposed
+baseline. Candidate: the public CPU route. Both were measured in the same
+Release binary. The six-thread run is the stable performance-core-sized run on
+this host; attempted eight-thread repeats had CV above 0.10 on several cases
+and are retained as raw diagnostics but excluded from the decision table.
+
+| case | 1-thread target ms (CV) | scalar/decomposed ms | 6-thread target ms (CV) | vs 1 thread | vs baseline at 6 threads | decision |
+|---|---:|---:|---:|---:|---:|---|
+| softmax R512 H4096 | 2.571875 (0.0450) | 3.487917 | 0.549761 (0.0463) | 4.68x | 6.33x | keep row parallelism |
+| causal attention H8 S128 D64 | 2.570625 (0.0156) | 2.677979 | 0.555919 (0.0993) | 4.62x | 4.79x | keep head/query parallelism; CV is at threshold |
+| MoE routing T1024 E64 K4 | 0.156679 (0.0936) | 0.827618 | 0.151962 (0.0506) | 1.03x | 5.46x | keep partial-sort implementation; intentionally serial |
+| Mamba scan C256 S512 N16 | 3.560417 (0.0172) | 3.586625 | 0.773006 (0.0550) | 4.61x | 4.57x | keep channel parallelism |
+| q8_0 QGEMM M16 N2048 K2048 | 3.815875 (0.0161) | 31.739709 | 1.377552 (0.0968) | 2.77x | 22.94x | keep composition over the existing dispatched q8_0 GEMV |
+
+Experiments: portable scalar/reference implementations were the correctness
+baseline. Disjoint outer-dimension partitioning was retained for softmax,
+attention, scan, and q8_0 QGEMM. MoE routing remains serial because the tested
+operation is already 0.15 ms and pool overhead did not produce a useful win.
+The MoE comparison includes equivalent stable sorting and selected-expert
+softmax work.
+
+Decision: keep the semantic ports and threaded candidates. This establishes
+correctness and representative performance evidence, not blanket support for
+every dtype, quant format, sibling-only fusion, or performance tier. Families
+remain conservatively unclaimed in backend metadata until operation-level
+benchmark coverage is complete.
+
+- Hardware: Apple M5 Max, 18 physical/logical cores (6 performance, 12
+  efficiency), 128 GB; aarch64 NEON with runtime DotProd/I8MM detection.
+- OS/toolchain: macOS 26.5.2; Apple Clang 21.0.0
+  (`clang-2100.1.1.101`); CMake Release.
+- Settings: one or six threads, OS-default affinity/frequency; t1 uses 3
+  warmups/20 samples/2 ms minimum; t6 uses 5 warmups/30 samples/5 ms minimum.
+- Commands: `quixicore_cpu_bench --preset quick --kernel contract_ops
+  --threads 1 --warmup 3 --iters 20 --min-sample-ms 2` and the six-thread
+  equivalent with `--warmup 5 --iters 30 --min-sample-ms 5`.
+- Working-tree label: `4a95ead-dirty`.
+- Raw results: `perf/results/2026-07-22/all-kernels-final-t1/` and
+  `perf/results/2026-07-22/all-kernels-final-t6/`.
+
+## 2026-07-21: CPU kernel correctness hardening
+
+Status: candidate.
+
+Current implementation:
+
+- Corrected f32-to-fp16 subnormal rounding so valid q8_0 subnormal scales do
+  not collapse to zero.
+- Made q8_0 packing reject non-finite inputs before integer conversion and
+  added checked shape/packed-size arithmetic plus pointer validation.
+- Removed activation-quantizing `dotprod_i8` from public qgemv dispatch,
+  including the environment override; it remains an internal benchmark for a
+  future separately contracted `qgemv_w8a8` operation.
+- Made RMSNorm recompute its reduction in f64 only when the normal NEON f32
+  sum is non-finite or subnormal, and normalized before applying the weight to
+  avoid otherwise avoidable intermediate overflow.
+- Changed benchmark correctness from passive error reporting to a finite,
+  elementwise `atol + rtol * |reference|` gate that fails before timing.
+
+Contract references inspected: umbrella `registry/kernels.yaml`,
+`registry/quant-formats.yaml`, `registry/benchmark-shapes.yaml`,
+`registry/tolerances.yaml`, and `matrices/`; CPU `perf/perf.md`.
+
+Correctness: Release CTest 9/9; ASan + UBSan + float-cast-overflow CTest 9/9;
+x86_64 cross-architecture compilation completed. Coverage includes exact fp16
+subnormal encodings, q8_0 NaN/Inf rejection, low-amplitude nonzero packing,
+overflowing dimensions, forced `dotprod_i8` fallback, extreme/tiny RMSNorm
+inputs, and benchmark-gate NaN rejection.
+
+Baseline: pre-change Release binary from the same `4a95ead-dirty` working-tree
+line. Candidate: post-change Release build. Both use public entry points with
+one thread. The repeat RMSNorm pair was run consecutively to reduce scheduler
+drift. Medians and CV follow; deltas are candidate versus baseline.
+
+| case | baseline ms (CV) | candidate ms (CV) | delta |
+|---|---:|---:|---:|
+| qgemv N4096 K4096 | 0.989646 (0.0796) | 0.969306 (0.0132) | -2.06% |
+| qgemv N8192 K8192 | 3.783417 (0.0116) | 3.804854 (0.0117) | +0.57% |
+| qgemv N16384 K4096 | 3.898792 (0.0180) | 3.913396 (0.0115) | +0.37% |
+| RMSNorm R1 H2048, repeat | 0.000280 (0.0500) | 0.000267 (0.0489) | -4.48% |
+| RMSNorm R1 H4096, repeat | 0.000532 (0.0349) | 0.000504 (0.0200) | -5.14% |
+| RMSNorm R4 H4096, repeat | 0.002006 (0.0993) | 0.001991 (0.0179) | -0.78% |
+| RMSNorm R512 H4096, repeat | 0.258800 (0.0195) | 0.260141 (0.0299) | +0.52% |
+
+Experiments: the first RMSNorm candidate used f64 division and square root on
+every row and regressed the R512 stress case by about 5.7%; rejected. The kept
+version preserves the original f32 fast path and enters f64 only for exceptional
+reductions. All candidate benchmark oracles passed; qgemv maximum absolute
+error was at most `9.98e-6` and RMSNorm at most `4.02e-7`.
+
+Decision: keep. The largest stable-shape candidate regressions are 0.57% for
+qgemv and 0.52% for RMSNorm, both inside run variance; no performance
+improvement is claimed. This entry supersedes the historical 2026-07-07
+`dotprod_i8` environment-override routing note.
+
+- Hardware: Apple M5 Max, 18 logical/physical cores, 128 GB; aarch64 NEON.
+- OS/toolchain: macOS 26.5.2; Apple Clang 21.0.0
+  (`clang-2100.1.1.101`); CMake Release.
+- Settings: one thread, OS-default affinity/frequency, 3 warmups, 20 timed
+  samples, 2 ms minimum sample time.
+- Command: `scripts/bench --preset quick --kernel qgemv,rms_norm --threads 1
+  --warmup 3 --iters 20 --min-sample-ms 2`, plus consecutive RMSNorm-only
+  repeats with the same timing settings.
+- Working-tree label: `4a95ead-dirty`.
+- Raw results: `perf/results/2026-07-21/review-baseline/`,
+  `review-candidate-final/`, `review-rms-baseline-repeat/`, and
+  `review-rms-candidate-repeat/` under the same date directory.
 
 ## 2026-07-07: qgemv contract realignment with Metal/CUDA
 
@@ -328,3 +467,48 @@ magnitude under the roofline because strict-FP scalar accumulation is
 latency-bound. That gap is the headroom future GEMV work is judged
 against.
 
+## 2026-07-22: qgemv_w8a8 (q4_0 weight x int8 activation)
+
+Status: implementation landed; correctness by construction + fp64 oracle test;
+on-hardware perf measurement pending (see note).
+
+New op: `qgemv_w8a8` — the activation-quantizing twin reserved in
+`include/quixicore_cpu/qgemv.h`. Weights stay in GGUF-interoperable q4_0 blocks
+(18 bytes / 32 weights: fp16 scale + 16 packed nibbles, implicit -8 offset);
+activations are quantized to per-32-block int8 (d = amax/127, round-to-nearest)
+once per call, then each output row is a 4-bit x int8 integer dot per block
+scaled by the combined fp16 scales with f32 accumulation. This is the ported
+delta from the embeddinggemma.c serving path (its proven `ei_vec_dot_q4_0_q8_0`
+scalar math), now shape-described in the family (no model name), not the
+weight-only f32-activation `qgemv` already in the repo.
+
+Surface: public `include/quixicore_cpu/qgemv_w8a8.h` (mirrors `qgemm.h`:
+`qgemv_w8a8`, `_packed_size`, `_pack`, `_variant`); dispatch in
+`src/dispatch/qgemv_w8a8.cpp` (validates shape/format, kQ4_0 only for now,
+kQ8_0 reserved -> kUnsupportedFormat); portable anchor in
+`kernels/quantization/qgemv_w8a8_ref.cpp`; internal contract in
+`kernels/quantization/qgemv_w8a8.h`; `QuantFormat::kQ4_0` added to `qgemv.h`.
+
+Correctness: `tests/correctness/test_qgemv_w8a8.cpp` (CTest `qgemv_w8a8`) —
+fp64 oracle out = dequantize(packed q4_0) @ x at the umbrella `quantized`
+tolerance tier (rtol/atol 3e-2; the residual over the weight-only oracle is the
+activation-quant error), plus determinism and format/argument validation. The
+scalar path is a direct port of the reference already validated bit-exact in
+the source engine against llama.cpp goldens.
+
+Measurement note (honesty gate): the reference dot and the fp64 oracle test are
+correct by construction and the test translation unit compiles clean
+(`c++ -std=c++20 -I include -I . -c` -> object, no warnings), but this
+environment cannot LINK the test executables (a toolchain ABI mismatch also hits
+the pre-existing `test_cpu_features`), so no CTest run or perf number was
+produced here. No speedup is claimed. To close the AGENTS.md perf gate, run in
+the maintainer link environment (Apple Clang 21, the box that builds CTest
+green):
+
+    cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+    cmake --build build -j
+    ctest --test-dir build -R qgemv_w8a8 --output-on-failure
+    scripts/bench --preset quick   # add a q4_0-weight/int8-act GEMV case
+
+Follow-ups (not in this change): NEON SDOT / AVX2 VNNI variants resolving
+last-wins by CPU feature (as `qgemv` does), and enabling `kQ8_0` weights.

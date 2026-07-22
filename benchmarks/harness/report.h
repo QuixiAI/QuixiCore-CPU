@@ -22,7 +22,7 @@ struct CaseResult {
   std::string skip_reason;
   std::string error;
   bool checked = false;
-  CheckResult check{0.0, 0.0};
+  CheckResult check;
   TimingResult timing{0.0, 0.0, 0.0, 0.0, 0};
   std::vector<BaselineResult> baselines;
   double gbps = 0.0;
