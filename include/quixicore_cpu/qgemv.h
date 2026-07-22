@@ -71,6 +71,19 @@ Status qgemv_unpack(QuantFormat format, const void* packed, long long n,
 Status qgemv(QuantFormat format, const void* packed, const float* x, float* y,
              long long n, long long k);
 
+// Compute only selected packed rows. row_ids has row_count entries in [0,n);
+// y is compact [row_count] in the same order. This is the packed projection
+// seam used by constrained vocabularies and MLA absorption.
+Status qgemv_rows(QuantFormat format, const void* packed, const float* x,
+                  const int* row_ids, float* y, long long row_count,
+                  long long n, long long k);
+
+// In-place out[K] += coefficient * dequantize(W[row,:]) without materializing
+// the complete packed matrix.
+Status qgemv_axpy_row(QuantFormat format, const void* packed, long long row,
+                      float coefficient, float* out, long long n,
+                      long long k);
+
 // XPU-style logical split layouts: adjacent E2M1 nibbles in packed_weights,
 // row-major scale bytes, and f32 activations/output. MXFP4 uses one E8M0 scale
 // per 32 values; NVFP4 uses one E4M3 scale per 16 plus a tensor scale.

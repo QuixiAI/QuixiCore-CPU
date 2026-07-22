@@ -214,6 +214,12 @@ Status rope_table(const float* x, const float* cosine, const float* sine,
                   const int* positions, float* y, long long tokens,
                   long long heads, long long head_dim,
                   long long max_position, bool interleaved = false);
+// RoPE seam used by latent/indexer projections that arrive as adjacent pairs
+// [a0,b0,a1,b1,...] but are consumed as split halves [real...,imag...]. This
+// operation is in-place compatible.
+Status rope_interleaved_to_split(const float* x, float* y, long long tokens,
+                                 long long heads, long long head_dim,
+                                 float base, long long pos0);
 
 // Normalize packed Q and K heads then apply table RoPE; V heads pass through.
 // qkv/y [tokens,(query_heads+key_heads+value_heads)*head_dim].
@@ -346,6 +352,30 @@ Status mla_decode(const float* q, const float* kv_cache,
                   long long cache_blocks, long long batch, long long heads,
                   long long latent_dim, long long rope_dim, long long page_size,
                   long long max_blocks, float scale = 0.0f);
+// Quantized MLA weight absorption. packed_kv_b is
+// [heads*(nope_dim+value_dim),latent_dim]. Instead of reconstructing K/V for
+// every cached token, the kernel projects each non-RoPE query into latent
+// space, attends over the latent/RoPE caches, then projects the mixed latent
+// vector into value space. Cache vectors are paged through block_table.
+Status quantized_mla_decode_absorbed(
+    QuantFormat format, const void* packed_kv_b, const float* q,
+    const float* latent_cache, const float* rope_cache,
+    const int* block_table, const int* context_lengths, float* out,
+    long long cache_blocks, long long batch, long long heads,
+    long long latent_dim, long long nope_dim, long long rope_dim,
+    long long value_dim, long long page_size, long long max_blocks,
+    float scale = 0.0f);
+// Sparse DSA counterpart. token_indices is [batch,max_topk] and entries are
+// logical positions resolved through the same page table.
+Status quantized_mla_decode_absorbed_sparse(
+    QuantFormat format, const void* packed_kv_b, const float* q,
+    const float* latent_cache, const float* rope_cache,
+    const int* block_table, const int* token_indices,
+    const int* topk_lengths, float* out, long long cache_blocks,
+    long long batch, long long heads, long long latent_dim,
+    long long nope_dim, long long rope_dim, long long value_dim,
+    long long page_size, long long max_blocks, long long max_topk,
+    float scale = 0.0f);
 Status mla_q_norm_rope(
     const float* q, const float* cosine, const float* sine,
     const int* positions, const float* norm_weight, float* out,
@@ -391,6 +421,11 @@ Status top_k_sample(const float* logits, int* out, long long rows,
 Status top_p_sample(const float* logits, int* out, long long rows,
                     long long vocab, float p, float temperature = 1.0f,
                     std::uint32_t seed = 0);
+// Select the K greatest values per row using a linear-time threshold partition,
+// then emit their indices in original column order. Equal-threshold entries use
+// the lowest columns first. This is the stable selection seam used by DSA.
+Status threshold_topk_indices(const float* scores, int* indices,
+                              long long rows, long long width, int k);
 Status min_p_sample(const float* logits, int* out, long long rows,
                     long long vocab, float min_p, float temperature = 1.0f,
                     std::uint32_t seed = 0);

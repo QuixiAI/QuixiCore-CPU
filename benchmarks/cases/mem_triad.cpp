@@ -2,7 +2,8 @@
 //
 // System-characterization probe, not a contract kernel: it establishes the
 // machine's memory roofline that memory-bound kernels (quantized decode
-// GEMV/GEMM) are judged against. Single-threaded, f32, baseline arch flags.
+// GEMV/GEMM) are judged against. Uses the configured thread count, f32, and
+// baseline architecture flags.
 
 #include <cmath>
 #include <cstring>
@@ -47,7 +48,7 @@ CaseDecl make_triad_decl(long long ws_bytes) {
   decl.variant = ws_name(ws_bytes);
   decl.shape = {{"n", n}};  // working set = 3*4*n bytes, named in variant
   decl.dtype = "f32";
-  decl.notes = "single-thread system probe; not a contract kernel";
+  decl.notes = "same-thread system probe; not a contract kernel";
   // STREAM counting convention: read b, read c, write a. Write-allocate
   // (RFO) traffic for a is not counted.
   decl.bytes_moved = 3.0 * 4.0 * static_cast<double>(n);

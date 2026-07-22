@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <vector>
 
 #include "kernels/common/validation.h"
 #include "src/threading/thread_pool.h"
@@ -47,6 +48,49 @@ Status rope(const float* x, float* y, long long tokens, long long heads,
         const float second = x[offset + half + i];
         y[offset + i] = first * cosine - second * sine;
         y[offset + half + i] = second * cosine + first * sine;
+      }
+    }
+  });
+  return Status::kOk;
+}
+
+Status rope_interleaved_to_split(const float* x, float* y, long long tokens,
+                                 long long heads, long long head_dim,
+                                 float base, long long pos0) {
+  if (!detail::valid_product({tokens, heads, head_dim}) ||
+      head_dim % 2 != 0 || pos0 < 0 || pos0 > LLONG_MAX - tokens ||
+      !std::isfinite(base) || base <= 0.0f) {
+    return Status::kInvalidShape;
+  }
+  if (!detail::all_nonnull(x, y)) return Status::kInvalidArgument;
+  const long long half = head_dim / 2;
+  threading::parallel_ranges(tokens * heads, 8,
+                             [&](long long begin, long long end, int) {
+    thread_local std::vector<float> scratch;
+    if (x == y && static_cast<long long>(scratch.size()) < head_dim) {
+      scratch.resize(static_cast<std::size_t>(head_dim));
+    }
+    for (long long item = begin; item < end; ++item) {
+      const long long token = item / heads;
+      const long long offset = item * head_dim;
+      const float* source = x + offset;
+      if (x == y) {
+        std::copy_n(source, head_dim, scratch.data());
+        source = scratch.data();
+      }
+      const double position = static_cast<double>(pos0 + token);
+      for (long long pair = 0; pair < half; ++pair) {
+        const double frequency =
+            std::pow(static_cast<double>(base),
+                     -2.0 * static_cast<double>(pair) /
+                         static_cast<double>(head_dim));
+        const double angle = position * frequency;
+        const float cosine = static_cast<float>(std::cos(angle));
+        const float sine = static_cast<float>(std::sin(angle));
+        const float first = source[2 * pair];
+        const float second = source[2 * pair + 1];
+        y[offset + pair] = first * cosine - second * sine;
+        y[offset + half + pair] = second * cosine + first * sine;
       }
     }
   });

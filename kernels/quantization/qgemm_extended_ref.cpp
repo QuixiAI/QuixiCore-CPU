@@ -93,44 +93,6 @@ Status qflux_gelu(QuantFormat format, const void* packed_weights,
                         LinearActivation::kGeluTanh);
 }
 
-Status int8_gemm(const std::int8_t* weights, const std::int8_t* x,
-                 const float* weight_scale, const float* activation_scale,
-                 const std::int32_t* weight_row_sum,
-                 const int* activation_zero_point, float* y, long long m,
-                 long long n, long long k, bool asymmetric) {
-  if (!detail::valid_product({m, n, k})) return Status::kInvalidShape;
-  if (!detail::all_nonnull(weights, x, weight_scale, activation_scale, y) ||
-      (asymmetric && !detail::all_nonnull(weight_row_sum,
-                                          activation_zero_point))) {
-    return Status::kInvalidArgument;
-  }
-  for (long long row = 0; row < n; ++row) {
-    if (!std::isfinite(weight_scale[row])) return Status::kInvalidArgument;
-  }
-  for (long long row = 0; row < m; ++row) {
-    if (!std::isfinite(activation_scale[row])) return Status::kInvalidArgument;
-  }
-  threading::parallel_ranges(m * n, 32,
-                             [&](long long begin, long long end, int) {
-    for (long long item = begin; item < end; ++item) {
-      const long long row = item / n;
-      const long long output = item % n;
-      std::int64_t sum = 0;
-      for (long long input = 0; input < k; ++input) {
-        sum += static_cast<int>(weights[output * k + input]) *
-               static_cast<int>(x[row * k + input]);
-      }
-      if (asymmetric) {
-        sum -= static_cast<std::int64_t>(activation_zero_point[row]) *
-               weight_row_sum[output];
-      }
-      y[item] = static_cast<float>(sum) * weight_scale[output] *
-                activation_scale[row];
-    }
-  });
-  return Status::kOk;
-}
-
 Status bitnet_int8_gemm(const void* packed_weights, const std::int8_t* x,
                         const float* activation_scale, float* y, long long m,
                         long long n, long long k) {

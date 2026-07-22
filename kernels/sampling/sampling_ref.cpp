@@ -86,6 +86,53 @@ std::vector<int> sorted_tokens(const float* row, long long vocab,
   return ids;
 }
 
+bool token_precedes(const float* logits, int lhs, int rhs) {
+  return logits[lhs] > logits[rhs] ||
+         (logits[lhs] == logits[rhs] && lhs < rhs);
+}
+
+void heap_sift_down(std::vector<int>& heap, std::size_t count,
+                    std::size_t root, const float* logits) {
+  const int value = heap[root];
+  while (true) {
+    const std::size_t left = 2 * root + 1;
+    if (left >= count) break;
+    std::size_t best = left;
+    if (left + 1 < count &&
+        token_precedes(logits, heap[left + 1], heap[left])) {
+      best = left + 1;
+    }
+    if (!token_precedes(logits, heap[best], value)) break;
+    heap[root] = heap[best];
+    root = best;
+  }
+  heap[root] = value;
+}
+
+std::vector<int> nucleus_tokens(const float* logits,
+                                const std::vector<double>& weights,
+                                double target) {
+  std::vector<int> heap(weights.size());
+  std::iota(heap.begin(), heap.end(), 0);
+  for (std::size_t parent = heap.size() / 2; parent > 0; --parent) {
+    heap_sift_down(heap, heap.size(), parent - 1, logits);
+  }
+  std::vector<int> selected;
+  double cumulative = 0.0;
+  std::size_t count = heap.size();
+  do {
+    const int root = heap[0];
+    selected.push_back(root);
+    cumulative += weights[static_cast<std::size_t>(root)];
+    --count;
+    if (count != 0) {
+      heap[0] = heap[count];
+      heap_sift_down(heap, count, 0, logits);
+    }
+  } while (count != 0 && cumulative < target);
+  return selected;
+}
+
 }  // namespace
 
 Status argmax_sample(const float* logits, int* out, long long rows,
@@ -186,31 +233,30 @@ Status top_p_sample(const float* logits, int* out, long long rows,
   for (long long row_index = 0; row_index < rows; ++row_index) {
     const float* row = logits + row_index * vocab;
     bool valid = true;
-    std::vector<int> ids = sorted_tokens(row, vocab, &valid);
+    const int best = row_argmax(row, vocab, &valid);
     if (!valid) {
       return Status::kInvalidArgument;
     }
-    const float maximum = row[ids.front()];
-    std::vector<double> weights(ids.size(), 0.0);
+    const float maximum = row[best];
+    std::vector<double> weights(static_cast<std::size_t>(vocab), 0.0);
     if (!std::isfinite(maximum)) {
-      out[row_index] = ids.front();
+      out[row_index] = best;
       continue;
     }
     double total = 0.0;
-    for (std::size_t i = 0; i < ids.size(); ++i) {
-      weights[i] = std::exp(
-          (static_cast<double>(row[ids[i]]) - maximum) / temperature);
-      total += weights[i];
+    for (long long token = 0; token < vocab; ++token) {
+      weights[static_cast<std::size_t>(token)] = std::exp(
+          (static_cast<double>(row[token]) - maximum) / temperature);
+      total += weights[static_cast<std::size_t>(token)];
     }
-    double cumulative = 0.0;
-    std::size_t keep = 0;
-    do {
-      cumulative += weights[keep++];
-    } while (keep < weights.size() && cumulative < p * total);
-    ids.resize(keep);
-    weights.resize(keep);
+    std::vector<int> ids = nucleus_tokens(row, weights, p * total);
+    std::vector<double> selected_weights(ids.size());
+    for (std::size_t item = 0; item < ids.size(); ++item) {
+      selected_weights[item] = weights[static_cast<std::size_t>(ids[item])];
+    }
     out[row_index] = sample_weighted(
-        ids, weights, uniform01(seed, static_cast<std::uint64_t>(row_index)));
+        ids, selected_weights,
+        uniform01(seed, static_cast<std::uint64_t>(row_index)));
   }
   return Status::kOk;
 }

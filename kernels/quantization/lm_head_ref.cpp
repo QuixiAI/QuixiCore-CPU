@@ -216,11 +216,6 @@ Status quantized_lm_head_candidates(
   if (offsets[0] != 0 || offsets[rows] != candidates) {
     return Status::kInvalidArgument;
   }
-  std::vector<float> logits(static_cast<std::size_t>(rows * vocab));
-  Status status = qgemm(format, packed_weights, hidden_states, logits.data(),
-                        rows, vocab, hidden);
-  if (status != Status::kOk) return status;
-  add_bias(logits.data(), bias, rows, vocab);
   for (long long row = 0; row < rows; ++row) {
     if (offsets[row] > offsets[row + 1] ||
         offsets[row + 1] - offsets[row] < top_k) {
@@ -234,13 +229,30 @@ Status quantized_lm_head_candidates(
       }
       ids.push_back(candidate_ids[item]);
     }
-    const float* row_logits = logits.data() + row * vocab;
-    const double lse = logsumexp_selected(row_logits, ids);
-    top_ids(row_logits, &ids, top_k);
+    std::vector<float> logits(ids.size());
+    Status status = qgemv_rows(
+        format, packed_weights, hidden_states + row * hidden, ids.data(),
+        logits.data(), static_cast<long long>(ids.size()), vocab, hidden);
+    if (status != Status::kOk) return status;
+    double maximum = -std::numeric_limits<double>::infinity();
+    for (std::size_t item = 0; item < ids.size(); ++item) {
+      if (bias != nullptr) logits[item] += bias[ids[item]];
+      maximum = std::max(maximum, static_cast<double>(logits[item]));
+    }
+    double denominator = 0.0;
+    for (float value : logits) denominator += std::exp(value - maximum);
+    const double lse = maximum + std::log(denominator);
+    std::vector<int> order(ids.size());
+    std::iota(order.begin(), order.end(), 0);
+    std::stable_sort(order.begin(), order.end(), [&](int lhs, int rhs) {
+      return logits[lhs] == logits[rhs] ? ids[lhs] < ids[rhs]
+                                        : logits[lhs] > logits[rhs];
+    });
     for (int item = 0; item < top_k; ++item) {
-      token_ids[row * top_k + item] = ids[item];
+      const int selected = order[item];
+      token_ids[row * top_k + item] = ids[selected];
       log_probabilities[row * top_k + item] =
-          static_cast<float>(row_logits[ids[item]] - lse);
+          static_cast<float>(logits[selected] - lse);
     }
   }
   return Status::kOk;

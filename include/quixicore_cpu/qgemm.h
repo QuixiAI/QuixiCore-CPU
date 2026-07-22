@@ -2,7 +2,9 @@
 
 #include <cstdint>
 
+#include "quixicore_cpu/packed_weights.h"
 #include "quixicore_cpu/qgemv.h"
+#include "quixicore_cpu/workspace.h"
 
 namespace quixicore_cpu {
 
@@ -14,6 +16,13 @@ enum class LmHeadSampling { kArgmax, kCategorical, kTopK, kTopP };
 // output Y [M,N]: Y = X @ dequantize(W)^T. Activations and output are f32.
 Status qgemm(QuantFormat format, const void* packed_weights, const float* x,
              float* y, long long m, long long n, long long k);
+
+// CPU-prepared equivalent of qgemm. The canonical QuantFormat bytes remain
+// owned by weights; its private row panel amortizes format decode across input
+// rows. A supplied workspace is retained by the caller. nullptr selects a
+// persistent workspace local to the invoking application/pool thread.
+Status qgemm_prepacked(const CpuPackedWeights& weights, const float* x,
+                       float* y, long long m, Workspace* workspace = nullptr);
 
 // Input-gradient seam for frozen packed weights: grad_x[M,K] =
 // grad_y[M,N] @ dequantize(W[N,K]).
@@ -36,6 +45,13 @@ Status int8_gemm(const std::int8_t* weights, const std::int8_t* x,
                  const std::int32_t* weight_row_sum,
                  const int* activation_zero_point, float* y, long long m,
                  long long n, long long k, bool asymmetric = false);
+const char* int8_gemm_variant();
+// Weight-only row-scaled int8 GEMM. W is [N,K] int8 with one f32 scale per
+// output row, X is [M,K] f32, and Y is [M,N] f32.
+Status qgemm_w8a32(const std::int8_t* weights, const float* weight_scale,
+                   const float* x, float* y, long long m, long long n,
+                   long long k);
+const char* qgemm_w8a32_variant();
 Status bitnet_int8_gemm(const void* packed_weights, const std::int8_t* x,
                         const float* activation_scale, float* y, long long m,
                         long long n, long long k);

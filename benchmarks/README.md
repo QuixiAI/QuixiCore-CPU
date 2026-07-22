@@ -74,8 +74,9 @@ RMSNorm cases, and a representative cross-family contract batch. Every checked
 case must pass its finite, elementwise tolerance gate before timing starts; a
 failed oracle produces an `error` row and a nonzero process exit:
 
-- `mem_triad` — STREAM-triad bandwidth probe (`a[i] = b[i] + s*c[i]`,
-  single-thread f32) over a working-set ladder from 96 KiB to 768 MiB,
+- `mem_triad` — STREAM-triad bandwidth probe (`a[i] = b[i] + s*c[i]`, f32)
+  using the configured `--threads` count over a working-set ladder from 96 KiB
+  to 768 MiB,
   crossing L1/L2/SLC into DRAM. Establishes the memory roofline that
   memory-bound kernels (quantized decode) are judged against. Carries a
   `memcpy` baseline; note memcpy moves 2n·4 bytes vs triad's counted 3n·4
@@ -102,6 +103,13 @@ failed oracle produces an `error` row and a nonzero process exit:
   checked against the same public operations composed with preallocated
   intermediate storage. This records focused evidence for the extended port
   batch without asserting an optimized performance tier.
+- `colibri_ops` — row-scaled W8A32, prequantized IDOT, INT4 f32/W4A8,
+  heap top-p, threshold top-k, and expert-union quantized MoE. Each case
+  compares the ported CPU route with the scalar, full-sort, or per-row
+  formulation it replaces.
+- `prerequisites` — Q4_0 QGEMM through a runtime-selected CPU row panel and
+  warmed caller-owned workspace, checked and timed against canonical-layout
+  QGEMM. Weight preparation is deliberately outside the timed region.
 
 ## Adding A Kernel Case
 

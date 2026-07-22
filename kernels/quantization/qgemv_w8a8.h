@@ -36,6 +36,9 @@ void q4_0_unpack_ref(const BlockQ4_0* packed, long long n, long long k,
 // activations, matching the public qgemv contract.
 void q4_0_gemv_ref(const BlockQ4_0* packed, const float* x, float* y,
                    long long n, long long k);
+void q4_0_gemv_pair_ref(const BlockQ4_0* packed_up,
+                        const BlockQ4_0* packed_gate, const float* x,
+                        float* up, float* gate, long long n, long long k);
 
 // y = dequant(W) . quant(x): quantize x [k] to per-32-block int8 once
 // (d = amax/127, round-to-nearest), then per row a 4-bit x int8 integer dot

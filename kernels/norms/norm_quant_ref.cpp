@@ -2,10 +2,10 @@
 
 #include <cmath>
 #include <cstdint>
-#include <vector>
 
 #include "kernels/common/validation.h"
 #include "quixicore_cpu/ops.h"
+#include "src/memory/workspace_internal.h"
 
 namespace quixicore_cpu {
 
@@ -14,11 +14,14 @@ Status rms_norm_add_quant_int8(
     std::int8_t* codes, float* residual_out, float* scales, long long rows,
     long long hidden, float eps, long long group_size) {
   if (!detail::valid_product({rows, hidden})) return Status::kInvalidShape;
-  std::vector<float> normalized(static_cast<std::size_t>(rows * hidden));
-  Status status = rms_norm_add(x, residual, weight, normalized.data(),
+  detail::WorkspaceFrame workspace;
+  float* normalized =
+      workspace.allocate<float>(static_cast<std::size_t>(rows * hidden));
+  if (normalized == nullptr) return Status::kOutOfMemory;
+  Status status = rms_norm_add(x, residual, weight, normalized,
                                residual_out, rows, hidden, eps);
   return status == Status::kOk
-             ? quantize_int8(normalized.data(), codes, scales, rows, hidden,
+             ? quantize_int8(normalized, codes, scales, rows, hidden,
                              group_size)
              : status;
 }
@@ -29,11 +32,14 @@ Status layer_norm_add_quant_int8(
     float* scales, long long rows, long long hidden, float eps,
     long long group_size) {
   if (!detail::valid_product({rows, hidden})) return Status::kInvalidShape;
-  std::vector<float> normalized(static_cast<std::size_t>(rows * hidden));
-  Status status = layer_norm_add(x, residual, weight, bias, normalized.data(),
+  detail::WorkspaceFrame workspace;
+  float* normalized =
+      workspace.allocate<float>(static_cast<std::size_t>(rows * hidden));
+  if (normalized == nullptr) return Status::kOutOfMemory;
+  Status status = layer_norm_add(x, residual, weight, bias, normalized,
                                  residual_out, rows, hidden, eps);
   return status == Status::kOk
-             ? quantize_int8(normalized.data(), codes, scales, rows, hidden,
+             ? quantize_int8(normalized, codes, scales, rows, hidden,
                              group_size)
              : status;
 }
@@ -44,11 +50,14 @@ Status rms_norm_add_quant_float8(
     long long hidden, float eps, long long group_size,
     bool power_of_two_scale, Float8Format format) {
   if (!detail::valid_product({rows, hidden})) return Status::kInvalidShape;
-  std::vector<float> normalized(static_cast<std::size_t>(rows * hidden));
-  Status status = rms_norm_add(x, residual, weight, normalized.data(),
+  detail::WorkspaceFrame workspace;
+  float* normalized =
+      workspace.allocate<float>(static_cast<std::size_t>(rows * hidden));
+  if (normalized == nullptr) return Status::kOutOfMemory;
+  Status status = rms_norm_add(x, residual, weight, normalized,
                                residual_out, rows, hidden, eps);
   return status == Status::kOk
-             ? quantize_float8(normalized.data(), codes, scales, rows, hidden,
+             ? quantize_float8(normalized, codes, scales, rows, hidden,
                                group_size, format, power_of_two_scale)
              : status;
 }
@@ -59,11 +68,14 @@ Status layer_norm_add_quant_float8(
     float* scales, long long rows, long long hidden, float eps,
     long long group_size, bool power_of_two_scale, Float8Format format) {
   if (!detail::valid_product({rows, hidden})) return Status::kInvalidShape;
-  std::vector<float> normalized(static_cast<std::size_t>(rows * hidden));
-  Status status = layer_norm_add(x, residual, weight, bias, normalized.data(),
+  detail::WorkspaceFrame workspace;
+  float* normalized =
+      workspace.allocate<float>(static_cast<std::size_t>(rows * hidden));
+  if (normalized == nullptr) return Status::kOutOfMemory;
+  Status status = layer_norm_add(x, residual, weight, bias, normalized,
                                  residual_out, rows, hidden, eps);
   return status == Status::kOk
-             ? quantize_float8(normalized.data(), codes, scales, rows, hidden,
+             ? quantize_float8(normalized, codes, scales, rows, hidden,
                                group_size, format, power_of_two_scale)
              : status;
 }
@@ -77,8 +89,11 @@ Status rms_norm_add_quant_float8_static(
     return Status::kInvalidShape;
   }
   if (!detail::all_nonnull(codes)) return Status::kInvalidArgument;
-  std::vector<float> normalized(static_cast<std::size_t>(rows * hidden));
-  Status status = rms_norm_add(x, residual, weight, normalized.data(),
+  detail::WorkspaceFrame workspace;
+  float* normalized =
+      workspace.allocate<float>(static_cast<std::size_t>(rows * hidden));
+  if (normalized == nullptr) return Status::kOutOfMemory;
+  Status status = rms_norm_add(x, residual, weight, normalized,
                                residual_out, rows, hidden, eps);
   if (status != Status::kOk) return status;
   for (long long index = 0; index < rows * hidden; ++index) {
@@ -97,8 +112,11 @@ Status layer_norm_add_quant_float8_static(
     return Status::kInvalidShape;
   }
   if (!detail::all_nonnull(codes)) return Status::kInvalidArgument;
-  std::vector<float> normalized(static_cast<std::size_t>(rows * hidden));
-  Status status = layer_norm_add(x, residual, weight, bias, normalized.data(),
+  detail::WorkspaceFrame workspace;
+  float* normalized =
+      workspace.allocate<float>(static_cast<std::size_t>(rows * hidden));
+  if (normalized == nullptr) return Status::kOutOfMemory;
+  Status status = layer_norm_add(x, residual, weight, bias, normalized,
                                  residual_out, rows, hidden, eps);
   if (status != Status::kOk) return status;
   for (long long index = 0; index < rows * hidden; ++index) {

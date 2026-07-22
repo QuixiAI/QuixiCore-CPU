@@ -77,6 +77,14 @@ Notes:
 - `src/memory/` — aligned allocation, packed-weight buffers, workspace
   arenas. See `src/memory/README.md`.
 
+The serialized quant format remains the contract boundary. Long-lived CPU
+weights may additionally own a private, 64-byte-aligned row panel selected for
+the runtime ISA; this panel is derived state and is never serialized or exposed
+as a new quant format. Kernel scratch comes from a caller-owned `Workspace` or
+from a persistent thread-local arena. Arena frames rewind logical use after an
+operation while retaining storage, so warmed hot paths do not allocate and
+nested kernel calls cannot release their caller's scratch.
+
 ## Directory Map
 
 ```text
@@ -88,7 +96,7 @@ src/
   runtime/                 Runtime CPU feature detection per OS/arch.
   dispatch/                Public op entry points and variant selection.
   threading/               Fork-join pool; set_num_threads() control.
-  memory/                  Aligned alloc and packing buffers (placeholder).
+  memory/                  Reusable workspaces and CPU packed-weight panels.
 kernels/                   Microkernels: <family>/<op>_<isa>.cpp.
 tests/
   smoke/                   Build- and metadata-level checks.

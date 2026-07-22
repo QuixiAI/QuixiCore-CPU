@@ -173,6 +173,25 @@ int main() {
       reference[static_cast<std::size_t>(row)] = sum;
     }
     REQUIRE(all_close(output.data(), reference, 1e-5, 1e-4));
+    const int selected_rows[] = {32, 0, 7};
+    float selected_output[3] = {};
+    REQUIRE(quixicore_cpu::qgemv_rows(
+                QuantFormat::kQ4_0, packed.data(), x.data(), selected_rows,
+                selected_output, 3, n, k) == Status::kOk);
+    for (int item = 0; item < 3; ++item) {
+      REQUIRE(std::fabs(selected_output[item] -
+                        output[static_cast<std::size_t>(selected_rows[item])]) <
+              1e-5f);
+    }
+    std::vector<float> accumulated(static_cast<std::size_t>(k), 0.25f);
+    REQUIRE(quixicore_cpu::qgemv_axpy_row(
+                QuantFormat::kQ4_0, packed.data(), 7, -0.5f,
+                accumulated.data(), n, k) == Status::kOk);
+    for (long long input = 0; input < k; ++input) {
+      REQUIRE(std::fabs(
+                  accumulated[static_cast<std::size_t>(input)] -
+                  (0.25f - 0.5f * dequantized[7 * k + input])) < 1e-6f);
+    }
     REQUIRE(std::string(quixicore_cpu::qgemv_variant(QuantFormat::kQ4_0)) ==
             "ref");
   }

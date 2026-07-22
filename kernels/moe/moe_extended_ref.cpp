@@ -8,9 +8,11 @@
 #include <vector>
 
 #include "kernels/common/validation.h"
+#include "kernels/quantization/gguf_ref.h"
 #include "quixicore_cpu/qgemm.h"
 #include "quixicore_cpu/qgemv.h"
 #include "quixicore_cpu/quantization.h"
+#include "quixicore_cpu/threading.h"
 #include "src/threading/thread_pool.h"
 
 namespace quixicore_cpu {
@@ -20,6 +22,112 @@ double softplus(double x) {
   if (x > 20.0) return x;
   if (x < -20.0) return std::exp(x);
   return std::log1p(std::exp(x));
+}
+
+Status grouped_qprojection(const float* x, const void* packed_weights,
+                           const int* expert_ids, const float* bias,
+                           float* out, long long rows, long long experts,
+                           long long input_dim, long long output_dim,
+                           QuantFormat format, bool use_bias) {
+  std::size_t expert_bytes = 0;
+  Status status =
+      qgemv_packed_size(format, output_dim, input_dim, &expert_bytes);
+  if (status != Status::kOk) return status;
+  long long block_size = 0;
+  std::size_t block_bytes = 0;
+  if (!quant::gguf_format_info(format, &block_size, &block_bytes)) {
+    return Status::kUnsupportedFormat;
+  }
+  const long long blocks_per_row = input_dim / block_size;
+  const std::size_t weight_row_bytes =
+      static_cast<std::size_t>(blocks_per_row) * block_bytes;
+
+  std::vector<long long> offsets(static_cast<std::size_t>(experts + 1), 0);
+  for (long long row = 0; row < rows; ++row) {
+    const int expert = expert_ids[row];
+    if (expert < 0 || expert >= experts) return Status::kInvalidArgument;
+    ++offsets[static_cast<std::size_t>(expert + 1)];
+  }
+  for (long long expert = 0; expert < experts; ++expert) {
+    offsets[static_cast<std::size_t>(expert + 1)] +=
+        offsets[static_cast<std::size_t>(expert)];
+  }
+  std::vector<long long> cursor = offsets;
+  std::vector<long long> order(static_cast<std::size_t>(rows));
+  for (long long row = 0; row < rows; ++row) {
+    order[static_cast<std::size_t>(
+        cursor[static_cast<std::size_t>(expert_ids[row])]++)] = row;
+  }
+  std::vector<int> active;
+  active.reserve(static_cast<std::size_t>(std::min(rows, experts)));
+  for (long long expert = 0; expert < experts; ++expert) {
+    if (offsets[static_cast<std::size_t>(expert)] !=
+        offsets[static_cast<std::size_t>(expert + 1)]) {
+      active.push_back(static_cast<int>(expert));
+    }
+  }
+
+  // Batch-union only saves weight traffic when at least one expert is shared.
+  // Preserve the ISA-dispatched GEMV path for decode/all-unique routing.
+  if (num_threads() == 1 || static_cast<long long>(active.size()) == rows) {
+    const auto* weights = static_cast<const std::uint8_t*>(packed_weights);
+    for (long long row = 0; row < rows; ++row) {
+      const int expert = expert_ids[row];
+      status = qgemv(format, weights + expert * expert_bytes,
+                     x + row * input_dim, out + row * output_dim, output_dim,
+                     input_dim);
+      if (status != Status::kOk) return status;
+      if (use_bias) {
+        for (long long output = 0; output < output_dim; ++output) {
+          out[row * output_dim + output] +=
+              bias[static_cast<long long>(expert) * output_dim + output];
+        }
+      }
+    }
+    return Status::kOk;
+  }
+
+  const auto* all_weights =
+      static_cast<const std::uint8_t*>(packed_weights);
+  const long long tasks = static_cast<long long>(active.size()) * output_dim;
+  threading::parallel_ranges(tasks, 8,
+                             [&](long long begin, long long end, int) {
+    thread_local std::vector<double> accumulators;
+    for (long long task = begin; task < end; ++task) {
+      const int expert = active[static_cast<std::size_t>(task / output_dim)];
+      const long long output = task % output_dim;
+      const long long first = offsets[static_cast<std::size_t>(expert)];
+      const long long last = offsets[static_cast<std::size_t>(expert + 1)];
+      const long long count = last - first;
+      accumulators.assign(static_cast<std::size_t>(count), 0.0);
+      const std::uint8_t* weight_row =
+          all_weights + static_cast<std::size_t>(expert) * expert_bytes +
+          static_cast<std::size_t>(output) * weight_row_bytes;
+      for (long long block = 0; block < blocks_per_row; ++block) {
+        const std::uint8_t* packed_block =
+            weight_row + static_cast<std::size_t>(block) * block_bytes;
+        for (int column = 0; column < block_size; ++column) {
+          const float weight =
+              quant::gguf_dequant_element(format, packed_block, column);
+          const long long input = block * block_size + column;
+          for (long long item = 0; item < count; ++item) {
+            const long long row = order[static_cast<std::size_t>(first + item)];
+            accumulators[static_cast<std::size_t>(item)] +=
+                static_cast<double>(weight) * x[row * input_dim + input];
+          }
+        }
+      }
+      for (long long item = 0; item < count; ++item) {
+        const long long row = order[static_cast<std::size_t>(first + item)];
+        double value = accumulators[static_cast<std::size_t>(item)];
+        if (use_bias) {
+          value += bias[static_cast<long long>(expert) * output_dim + output];
+        }
+        out[row * output_dim + output] = static_cast<float>(value);
+      }
+    }
+  });
+  return Status::kOk;
 }
 
 }  // namespace
@@ -526,26 +634,8 @@ Status moe_grouped_qgemm(
       (use_bias && bias == nullptr)) {
     return Status::kInvalidArgument;
   }
-  std::size_t expert_bytes = 0;
-  Status status = qgemv_packed_size(format, output_dim, input_dim,
-                                    &expert_bytes);
-  if (status != Status::kOk) return status;
-  const auto* weights = static_cast<const std::uint8_t*>(packed_weights);
-  for (long long row = 0; row < rows; ++row) {
-    const int expert = expert_ids[row];
-    if (expert < 0 || expert >= experts) return Status::kInvalidArgument;
-    status = qgemv(format, weights + expert * expert_bytes,
-                   x + row * input_dim, out + row * output_dim, output_dim,
-                   input_dim);
-    if (status != Status::kOk) return status;
-    if (use_bias) {
-      for (long long output = 0; output < output_dim; ++output) {
-        out[row * output_dim + output] +=
-            bias[static_cast<long long>(expert) * output_dim + output];
-      }
-    }
-  }
-  return Status::kOk;
+  return grouped_qprojection(x, packed_weights, expert_ids, bias, out, rows,
+                             experts, input_dim, output_dim, format, use_bias);
 }
 
 Status moe_grouped_qswiglu(
@@ -563,28 +653,16 @@ Status moe_grouped_qswiglu(
     return Status::kInvalidArgument;
   }
   const long long outputs = 2 * intermediate_dim;
-  std::size_t expert_bytes = 0;
-  Status status =
-      qgemv_packed_size(format, outputs, input_dim, &expert_bytes);
+  if (!detail::valid_product({rows, outputs})) return Status::kInvalidShape;
+  std::vector<float> projection(static_cast<std::size_t>(rows * outputs));
+  Status status = grouped_qprojection(
+      x, packed_weights, expert_ids, bias, projection.data(), rows, experts,
+      input_dim, outputs, format, use_bias);
   if (status != Status::kOk) return status;
-  const auto* weights = static_cast<const std::uint8_t*>(packed_weights);
-  std::vector<float> projection(static_cast<std::size_t>(outputs));
   for (long long row = 0; row < rows; ++row) {
-    const int expert = expert_ids[row];
-    if (expert < 0 || expert >= experts) return Status::kInvalidArgument;
-    status = qgemv(format, weights + expert * expert_bytes,
-                   x + row * input_dim, projection.data(), outputs,
-                   input_dim);
-    if (status != Status::kOk) return status;
-    for (long long item = 0; item < outputs; ++item) {
-      if (use_bias) {
-        projection[item] +=
-            bias[static_cast<long long>(expert) * outputs + item];
-      }
-    }
     for (long long item = 0; item < intermediate_dim; ++item) {
-      float gate = projection[item];
-      float up = projection[intermediate_dim + item];
+      float gate = projection[row * outputs + item];
+      float up = projection[row * outputs + intermediate_dim + item];
       if (oai_mode) {
         gate = std::min(gate, limit);
         up = std::clamp(up, -limit, limit);

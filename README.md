@@ -11,6 +11,8 @@ fork-join thread pool behind the shared API semantics.
 Current status: correctness-tested reference implementation. Family-level
 support remains conservative until each operation, dtype, and registry shape
 has its own benchmark evidence; see `docs/sibling-port-matrix.md`.
+The Colibri CPU-algorithm excavation is tracked separately in
+`docs/colibri-port-matrix.md`.
 
 ## Scope
 
@@ -25,8 +27,10 @@ The current portable surface includes norms and backward paths, activations,
 dense/quantized matmul, attention and decode, the sibling packed-format
 decoders, sampling/serving, embeddings and KV caches, linear attention,
 Mamba/SSD/FFT-convolution semantics, MoE, vision, training utilities, and
-host-reference collectives. SIMD specialization beyond the existing aarch64
-RMSNorm and q8_0 GEMV routes remains future performance work.
+host-reference collectives. Runtime-selected SIMD routes include aarch64
+RMSNorm/q8_0 GEMV plus Colibri-derived W8A32, W8A8, and low-bit matmul paths on
+supported aarch64 and x86_64 ISAs; remaining portable kernels are still future
+performance work.
 
 ## Repository Layout
 
@@ -39,7 +43,7 @@ src/
   runtime/                  Runtime CPU feature detection per OS/arch.
   dispatch/                 Public op entry points and variant selection.
   threading/                Fork-join pool; set_num_threads() control.
-  memory/                   Aligned alloc and packing buffers (placeholder).
+  memory/                   Reusable workspaces and CPU packed-weight panels.
 kernels/                    Microkernels by contract family: <op>_<isa>.cpp.
 tools/                      Local command-line utilities.
 tests/

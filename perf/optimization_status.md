@@ -23,6 +23,8 @@ performance claim must add a focused optimization entry here.
 
 | Date | Kernel | Dtype / Format | Shape Set | Target | Baseline | Candidate | Decision | Evidence |
 |---|---|---|---|---|---:|---:|---|---|
+| 2026-07-22 | CPU packed-panel/workspace prerequisites | q4_0 weights / f32 activation | M16 N1024 K1408 | aarch64 NEON layout, 1/6 threads | canonical QGEMM 4.0272 / 1.7384 ms | prepacked QGEMM 2.0219 / 0.6028 ms | keep; exact output, 1.99x/2.88x, retained workspace | `perf/results/2026-07-22/prerequisites-t{1,6}/` |
+| 2026-07-22 | Colibri CPU algorithm batch | row int8, packed int4, f32 selection, q4_0 MoE | M4 N1024 K1408; V65536; R16 W8192 K2048; R32 E8 K256 N512 | aarch64 NEON/DotProd/I8MM, 1/6 threads | scalar/full-sort/per-row 0.4502-4.9532 / 0.1656-4.1210 ms | 0.0663-1.8725 / 0.0357-1.5431 ms | keep optimized numeric/selection routes; keep MoE union only for shared multi-thread batches | `perf/results/2026-07-22/colibri-port-final-t{1,6}/` |
 | 2026-07-22 | qgemv_w8a8 q4_0 SDOT (dotprod_i8) | q4_0 weight / int8 act | quant_matmul m=1 (perf validation pending) | aarch64 DotProd | q4_0 w8a8 scalar ref | NEON SDOT (perf pending) | land; correctness validated (NEON==ref 1.3e-6), perf pending maintainer link env | see "2026-07-22: qgemv_w8a8 q4_0 SDOT" section below |
 | 2026-07-22 | MXFP8 logical-scale GEMM | E4M3 / E8M0 | M16 N128 K256 G32 | portable table-decoded reference, 1/6 threads | direct decoder 1.6688 / 0.3660 ms | lookup decoder 0.4608 / 0.1229 ms | keep lookup; 3.62x/2.98x faster, still below predecoded dense | `perf/results/2026-07-22/sibling-entrypoints-{final,lookup}-t{1,6}/` |
 | 2026-07-22 | fused RMSNorm-add + dynamic quantization | f32 / group int8 | R512 H4096 G128 | portable fused reference, 1/6 threads | 3.2327 / 1.2658 ms | 3.2725 / 1.2906 ms | keep semantic fusion; 1.2-2.0% allocation cost, no speedup claim | `perf/results/2026-07-22/ported-ops-final-{t1,t6}/` |
@@ -34,6 +36,118 @@ performance claim must add a focused optimization entry here.
 | 2026-07-07 | rms_norm | f32 | decode_small (R1-R4, H2048/H4096) + R512 stress | aarch64 NEON | 2.26 us | 0.52 us | keep neon variant (4.3-4.6x over ref) | `perf/results/2026-07-07/024347-quick/` |
 | 2026-07-07 | quant_gemv | q8_0 | quant_matmul m=1 (4096x4096, 8192x8192, 16384x4096) | aarch64 NEON DotProd | 4.314 ms | 0.301 ms | keep dotprod variant (14.4x, 51% of DRAM roofline) | `perf/results/2026-07-07/023619-quick/` |
 | 2026-07-07 | quant_gemv | q8_0 | quant_matmul m=1 (4096x4096, 8192x8192, 16384x4096) | aarch64 baseline flags | 4.319 ms | 4.441 ms | reject multi-acc candidate; keep plain loop as ref | `perf/results/2026-07-07/022305-quick/` |
+
+## 2026-07-22: CPU packed-panel and workspace prerequisites
+
+Status: retained CPU infrastructure and first measured consumer.
+
+Current implementation: `CpuPackedWeights` preserves an owned copy of the
+canonical QuixiCore/GGUF bytes and derives a private 64-byte-aligned row panel.
+The automatic panel width is 4 rows on NEON, 8 on AVX2, 16 on AVX-512, and 1
+for the portable fallback. `Workspace` is a segmented, pointer-stable arena;
+caller-owned and persistent thread-local paths both retain capacity after a
+frame rewinds. The first consumer, Q4_0/Q8_0 `qgemm_prepacked`, transposes the
+M activations once and reuses each packed weight block across the M tile. The
+fused norm/quantization and paired-projection paths now use retained internal
+scratch instead of per-call vectors.
+
+Correctness: the focused tests force every panel width and every registered
+packed block geometry, verify byte placement, zero padding, 64-byte alignment,
+canonical-byte preservation, Q4_0/Q8_0 output for M1/M3/M17 at one and four
+threads, workspace pointer stability, and capacity reuse. The benchmark output
+is exact versus canonical Q4_0 QGEMM. Native Release CTest passes 37/37,
+including benchmark smoke; ASan + UBSan + float-cast-overflow passes 36/36;
+the x86_64 AVX2/AVX-512 cross-build and Rosetta test run pass 31/31.
+
+Baseline: canonical-layout `qgemm`, which dispatches one QGEMV per activation
+row. Candidate: prepared Q4_0 QGEMM with panel construction outside timing and
+a warmed caller-owned workspace.
+
+| threads | candidate median ms (CV; p20-p80) | baseline median ms | speedup | decision |
+|---:|---:|---:|---:|---|
+| 1 | 2.021854 (0.0569; 1.970958-2.135056) | 4.027229 | 1.99x | keep panel reuse |
+| 6 | 0.602766 (0.0356; 0.587861-0.626130) | 1.738412 | 2.88x | keep panel reuse and one fork-join region |
+
+The existing R512 H4096 fused RMSNorm-add/int8 case was rerun after replacing
+its vector with retained thread-local scratch: 3.350604 ms (CV 0.0687) at one
+thread and 1.295057 ms (CV 0.0349) at six threads. Both outputs remain exact;
+the result is consistent with the prior 3.272490/1.290578 ms run, so this
+change claims allocation removal but no norm speedup.
+
+- Hardware: Apple M5 Max, 18 physical/logical cores (6 performance, 12
+  efficiency), 128 GB; aarch64 NEON with DotProd and I8MM.
+- OS/toolchain: macOS 26.5.2; Apple Clang 21.0.0
+  (`clang-2100.1.1.101`); CMake Release.
+- Settings: one or six threads, OS-default affinity/frequency, 5 warmups,
+  30 timed samples, 5 ms minimum sample time.
+- Command: `quixicore_cpu_bench --preset quick --kernel prerequisites
+  --threads {1,6} --warmup 5 --iters 30 --min-sample-ms 5`; fused-path rerun
+  substitutes `--kernel ported_ops`.
+- Working-tree label: `33ad02b-dirty`.
+- Raw results: `perf/results/2026-07-22/prerequisites-t{1,6}/` and
+  `perf/results/2026-07-22/workspace-ported-t{1,6}/`.
+
+## 2026-07-22: Colibri CPU algorithm excavation
+
+Status: candidate kernels with focused aarch64 evidence.
+
+Current implementation: Colibri's runner-local algorithms are exposed as CPU
+kernels rather than copied as model orchestration. The batch adds row-scaled
+W8A32 GEMM; prequantized W8A8 integer GEMM; int2, int3-g64, row/group int4,
+dynamic W4A8, paired projection, packed-row, and E8/IQ3 conversion/compute
+operations; adjacent-to-split RoPE; heap nucleus sampling; threshold top-k;
+quantized dense/sparse MLA weight absorption; and stable MoE expert-batch
+union. Portable references remain available. Runtime routes cover NEON,
+DotProd, I8MM, AVX2, AVX-512, and VNNI where the operation and build target
+support them. The exact source-to-kernel inventory and non-kernel exclusions
+are in `docs/colibri-port-matrix.md`.
+
+Correctness: focused tests cover layouts, pack/unpack, scalar-versus-ISA
+routes, asymmetric int8 correction, deterministic sampling/ties, in-place
+RoPE, dense/sparse MLA oracles, MoE grouping, and invalid inputs. E8/IQ3
+packing additionally matches a fixed 98-byte oracle emitted by Colibri's
+Python encoder. Native Release CTest passes 35/35. ASan + UBSan +
+float-cast-overflow CTest passes 35/35. The x86_64 cross-build compiles every
+new AVX2/AVX-512/VNNI file and its full Rosetta CTest run passes 29/29.
+
+Baseline: every benchmark case carries a same-binary independent scalar,
+full-sort, or dispatched-per-row baseline. Candidate: the public CPU route.
+Both use identical inputs and correctness is checked before timing.
+
+| case | 1-thread candidate / baseline ms (CV) | speedup | 6-thread candidate / baseline ms (CV) | speedup | decision |
+|---|---:|---:|---:|---:|---|
+| W8A32 M4 N1024 K1408 | 0.5601 / 3.0125 (0.0238) | 5.38x | 0.1645 / 0.5505 (0.0416) | 3.35x | keep NEON/runtime route |
+| prequantized int8 IDOT M4 N1024 K1408 | 0.0663 / 1.1570 (0.0301) | 17.45x | 0.0357 / 0.2743 (0.0567) | 7.68x | keep DotProd/I8MM dispatch |
+| int4 f32 M4 N1024 K1408 | 0.6231 / 4.9532 (0.0271) | 7.95x | 0.1879 / 0.8327 (0.0138) | 4.43x | keep NEON/runtime route |
+| dynamic W4A8 M4 N1024 K1408 | 0.0966 / 0.4502 (0.0448) | 4.66x | 0.0502 / 0.1656 (0.0535) | 3.30x | keep quantize-once IDOT route |
+| heap top-p V65536 | 1.8725 / 4.6414 (0.0630) | 2.48x | 1.5431 / 4.1210 (0.0478) | 2.67x | keep partial heap extraction |
+| threshold top-k R16 W8192 K2048 | 1.0982 / 2.2536 (0.0293) | 2.05x | 0.3230 / 1.9589 (0.0342) | 6.06x | keep threshold partition + row parallelism |
+| MoE union R32 E8 K256 N512 | 0.9235 / 0.8339 (0.1501) | 0.90x | 0.6481 / 0.8369 (0.0242) | 1.29x | use union only for shared experts with multiple threads |
+
+The MoE one-thread candidate and baseline execute the same dispatched per-row
+GEMV path after the retained guard; their 10% difference is measurement noise
+with CV 0.1501, not a regression claim. An initial always-union experiment was
+about 3x slower at one thread and was rejected. The final route preserves the
+normal GEMV path for one-thread or all-unique routing and enables weight reuse
+only for repeated experts with a live worker pool.
+
+Decision: keep. The numeric and selection routes produce material, repeatable
+speedups against their exact baselines. Keep the guarded MoE union because its
+six-thread repeated-expert case is 1.29x faster and its one-thread route falls
+back. The portable E8/IQ3, MLA, RoPE, paired-projection, and row primitives are
+correctness candidates; this run does not claim a performance tier for those
+unmeasured shapes.
+
+- Hardware: Apple M5 Max, 18 physical/logical cores (6 performance, 12
+  efficiency), 128 GB; aarch64 NEON with DotProd and I8MM.
+- OS/toolchain: macOS 26.5.2; Apple Clang 21.0.0
+  (`clang-2100.1.1.101`); CMake Release.
+- Settings: one or six threads, OS-default affinity/frequency, 5 warmups,
+  30 timed samples, 5 ms minimum sample time.
+- Command: `quixicore_cpu_bench --preset quick --kernel colibri_ops --threads
+  {1,6} --warmup 5 --iters 30 --min-sample-ms 5`.
+- Working-tree label: `33ad02b-dirty`.
+- Raw results: `perf/results/2026-07-22/colibri-port-final-t{1,6}/`.
 
 ## 2026-07-22: MXFP8/NVFP4 and final sibling entry points
 
@@ -103,8 +217,8 @@ encode the documented `[rows,groups]` scale and `[rows,intermediate]` output
 shapes and remain as regression coverage.
 
 Baseline: the decomposed operations with a persistent intermediate buffer.
-Candidate: the fused public operation, whose portable reference currently
-allocates its intermediate per call.
+Candidate in this historical run: the fused public operation before its
+temporary moved to the reusable workspace.
 
 | threads | candidate median ms (CV; p20-p80) | baseline median ms | candidate / baseline | decision |
 |---:|---:|---:|---:|---|
@@ -113,8 +227,8 @@ allocates its intermediate per call.
 
 Decision: keep. The public composition supplies the sibling semantics with a
 small, measured allocation cost versus a caller-managed intermediate. No
-performance improvement or optimized tier is claimed; eliminating the
-temporary remains future tuning work.
+performance improvement or optimized tier is claimed. The prerequisite run
+above removes that allocation and records the post-change measurement.
 
 - Hardware: Apple M5 Max, 18 physical/logical cores (6 performance, 12
   efficiency), 128 GB; aarch64 NEON.

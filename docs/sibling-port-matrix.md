@@ -89,3 +89,6 @@ focused fused norm-add/int8-quant run and MXFP8 logical-scale GEMM against a
 predecoded dense baseline. Exact
 commands, hardware, medians, variance, and decisions live in
 `perf/optimization_status.md`; this matrix makes no family-wide speed claim.
+
+The separate algorithm excavation from the Colibri CPU runner is inventoried
+in `docs/colibri-port-matrix.md`.
