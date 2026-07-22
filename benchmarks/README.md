@@ -89,9 +89,10 @@ failed oracle produces an `error` row and a nonzero process exit:
   checked against float64 accumulation over exactly dequantized weights.
   Contract-compatible f32-activation variants are timed; activation-quantized
   math is exposed only through the separate `qgemv_w8a8` operation.
-- `qgemv_formats` — q4_0 weight-only GEMV and q4_0/q8_0 W8A8 GEMV at the
-  registry N4096 K4096 decode shape. W8A8 correctness is checked against
-  independently dequantized weights and blockwise-int8 activations.
+- `qgemv_formats` — q4_0, q4_k, q5_k, q6_k, iq4_nl, iq4_xs, iq2_xxs,
+  iq2_xs, iq3_xxs, and iq1_s weight-only GEMV plus q4_0/q8_0 W8A8 GEMV.
+  The non-Q8 paths use the registry N4096 K4096 decode shape (N1024 for the
+  larger block-decode format sweep) and independent element-decode oracles.
 - `rms_norm` — public f32 RMSNorm over `decode_small` shapes plus an R512
   throughput stress shape, checked against a float64 oracle.
 - `contract_ops` — portable f32 softmax, causal attention, MoE top-k routing,
@@ -107,9 +108,16 @@ failed oracle produces an `error` row and a nonzero process exit:
   heap top-p, threshold top-k, and expert-union quantized MoE. Each case
   compares the ported CPU route with the scalar, full-sort, or per-row
   formulation it replaces.
-- `prerequisites` — Q4_0 QGEMM through a runtime-selected CPU row panel and
-  warmed caller-owned workspace, checked and timed against canonical-layout
-  QGEMM. Weight preparation is deliberately outside the timed region.
+- `prerequisites` — Q4_0, Q4_K, Q6_K, and IQ4_XS QGEMM through a
+  runtime-selected CPU row panel and warmed caller-owned workspace, checked
+  and timed against canonical-layout QGEMM. Both M16 prefill and the Q4_0 M128
+  reuse case are covered; weight preparation is outside the timed region.
+- `optimization_plan` — focused before/after cases for blocked dense GEMM,
+  fused Q4_0 SwiGLU projection, fused QKV+RoPE+KV insertion, streaming
+  quantized LM-head argmax, radix-2 FFT convolution, recurrent Mamba2,
+  grouped Q4_0 MoE SwiGLU, and online paged attention. Each baseline is the
+  replaced scalar, materialized, or asymptotically slower formulation in the
+  same binary.
 
 ## Adding A Kernel Case
 

@@ -78,16 +78,17 @@ Status paged_impl(const float* q, const KeyValue* key_cache,
       const long long kvhead = qhead / group;
       const long long context = context_lens[request];
       const long long start = window > 0 ? std::max(0LL, context - window) : 0;
-      std::vector<float> scores(static_cast<std::size_t>(context - start));
+      const float* query = q + item * head_dim;
+      float* output = out + item * head_dim;
+      std::fill_n(output, head_dim, 0.0f);
       float maximum = sinks != nullptr ? sinks[qhead]
                                        : -std::numeric_limits<float>::infinity();
-      const float* query = q + item * head_dim;
+      double denominator = sinks != nullptr ? 1.0 : 0.0;
       for (long long position = start; position < context; ++position) {
         const long long logical_block = position / page_size;
         if (block_mask != nullptr &&
             block_mask[(request * query_heads + qhead) * max_blocks +
                        logical_block] == 0) {
-          scores[position - start] = -std::numeric_limits<float>::infinity();
           continue;
         }
         const int physical =
@@ -110,38 +111,42 @@ Status paged_impl(const float* q, const KeyValue* key_cache,
         if (alibi_slopes != nullptr) {
           dot += alibi_slopes[qhead] * (position - (context - 1));
         }
-        scores[position - start] = capped_score(dot, softcap);
-        maximum = std::max(maximum, scores[position - start]);
-      }
-      double denominator = sinks != nullptr ? std::exp(sinks[qhead] - maximum) : 0.0;
-      for (float score : scores) {
-        if (score != -std::numeric_limits<float>::infinity()) {
-          denominator += std::exp(score - maximum);
-        }
-      }
-      float* output = out + item * head_dim;
-      std::fill_n(output, head_dim, 0.0f);
-      if (!(denominator > 0.0)) continue;
-      for (long long position = start; position < context; ++position) {
-        const float score = scores[position - start];
-        if (score == -std::numeric_limits<float>::infinity()) continue;
-        const double probability = std::exp(score - maximum) / denominator;
-        const int physical = block_table[
-            request * max_blocks + position / page_size];
-        const long long base =
-            ((static_cast<long long>(physical) * page_size +
-              position % page_size) * kv_heads + kvhead) * head_dim;
-        for (long long dim = 0; dim < head_dim; ++dim) {
-          float value;
-          if constexpr (sizeof(KeyValue) == sizeof(std::uint8_t)) {
-            value = float8_decode(
-                        static_cast<std::uint8_t>(value_cache[base + dim]),
-                        fp8_format) * value_scale[kvhead];
-          } else {
-            value = static_cast<float>(value_cache[base + dim]);
+        const float score = capped_score(dot, softcap);
+        if (score > maximum) {
+          const double old_weight = std::exp(maximum - score);
+          denominator = denominator * old_weight + 1.0;
+          for (long long dim = 0; dim < head_dim; ++dim) {
+            float value;
+            if constexpr (sizeof(KeyValue) == sizeof(std::uint8_t)) {
+              value = float8_decode(
+                          static_cast<std::uint8_t>(value_cache[base + dim]),
+                          fp8_format) * value_scale[kvhead];
+            } else {
+              value = static_cast<float>(value_cache[base + dim]);
+            }
+            output[dim] =
+                static_cast<float>(output[dim] * old_weight + value);
           }
-          output[dim] += static_cast<float>(probability * value);
+          maximum = score;
+        } else {
+          const double weight = std::exp(score - maximum);
+          denominator += weight;
+          for (long long dim = 0; dim < head_dim; ++dim) {
+            float value;
+            if constexpr (sizeof(KeyValue) == sizeof(std::uint8_t)) {
+              value = float8_decode(
+                          static_cast<std::uint8_t>(value_cache[base + dim]),
+                          fp8_format) * value_scale[kvhead];
+            } else {
+              value = static_cast<float>(value_cache[base + dim]);
+            }
+            output[dim] += static_cast<float>(value * weight);
+          }
         }
+      }
+      if (denominator > 0.0) {
+        const float inverse = static_cast<float>(1.0 / denominator);
+        for (long long dim = 0; dim < head_dim; ++dim) output[dim] *= inverse;
       }
     }
   });

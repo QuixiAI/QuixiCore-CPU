@@ -238,6 +238,24 @@ int main() {
                         kK) == Status::kOk &&
                     close(q[1], k[1]) && close(k[1], v[1]),
                 "fused QKV");
+  const float rope_cos[] = {1.0f, 0.0f};
+  const float rope_sin[] = {0.0f, 1.0f};
+  float rope_q[2] = {}, key_cache[4] = {}, value_cache[4] = {};
+  ok &= require(
+      qgemv_qkv_rope_kv(
+          QuantFormat::kQ8_0, packed.data(), packed.data(), packed.data(),
+          activation.data(), rope_cos, rope_sin, rope_q, key_cache,
+          value_cache, 1, 1, 2, kK, 2, 2, 1, 1) == Status::kOk &&
+          close(rope_q[0], -q[1]) && close(rope_q[1], q[0]) &&
+          close(key_cache[2], -k[1]) && close(key_cache[3], k[0]) &&
+          close(value_cache[2], v[0]) && close(value_cache[3], v[1]),
+      "fused QKV RoPE KV insert");
+  ok &= require(qgemv_qkv_rope_kv(
+                        QuantFormat::kQ8_0, packed.data(), packed.data(),
+                        packed.data(), activation.data(), rope_cos, rope_sin,
+                        rope_q, key_cache, value_cache, 1, 1, 2, kK, 2, 2, 2,
+                        1) == Status::kInvalidShape,
+                "fused QKV RoPE position validation");
   int identity[kK];
   for (int i = 0; i < kK; ++i) identity[i] = i;
   float actorder[2];

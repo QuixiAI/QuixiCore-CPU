@@ -82,7 +82,7 @@ bool run_format(quixicore_cpu::QuantFormat format) {
       }
     }
 
-    for (long long m : {1LL, 3LL, 17LL}) {
+    for (long long m : {1LL, 3LL, 17LL, 65LL}) {
       std::vector<float> x(static_cast<std::size_t>(m * k));
       for (float& value : x) {
         value = static_cast<float>(next(&state) >> 8) / 8388608.0f - 1.0f;
@@ -101,7 +101,7 @@ bool run_format(quixicore_cpu::QuantFormat format) {
                   3e-5f * (1.0f + std::fabs(expected[index])));
         }
         REQUIRE(workspace.used() == 0);
-        if (m > 1) {
+        if (m >= 64) {
           const std::size_t capacity = workspace.capacity();
           REQUIRE(capacity != 0);
           REQUIRE(qgemm_prepacked(weights, x.data(), actual.data(), m,
@@ -181,6 +181,56 @@ bool run_all_panel_formats() {
             }
           }
         }
+      }
+    }
+
+    CpuPackedWeights compute_weights;
+    const bool nonzero_compute =
+        format == QuantFormat::kQ4_K || format == QuantFormat::kQ5_K ||
+        format == QuantFormat::kQ6_K || format == QuantFormat::kIQ4_NL ||
+        format == QuantFormat::kIQ4_XS || format == QuantFormat::kIQ2_XXS ||
+        format == QuantFormat::kIQ2_XS || format == QuantFormat::kIQ3_XXS ||
+        format == QuantFormat::kIQ1_S;
+    if (!nonzero_compute) {
+      std::fill(contract.begin(), contract.end(), 0);
+    } else {
+      CpuPackedWeights metadata;
+      REQUIRE(metadata.prepare(format, contract.data(), n, k,
+                               CpuPanelLayout::kPortableRows1) == Status::kOk);
+      const std::size_t block_bytes = metadata.info().block_bytes;
+      for (std::size_t block = 0; block < contract.size();
+           block += block_bytes) {
+        const std::size_t scale_offset =
+            format == QuantFormat::kQ6_K ? 208 : 0;
+        contract[block + scale_offset] = 0;
+        contract[block + scale_offset + 1] = 0x3c;
+        if (format == QuantFormat::kQ4_K || format == QuantFormat::kQ5_K) {
+          contract[block + 2] = 0;
+          contract[block + 3] = 0;
+        }
+      }
+    }
+    REQUIRE(compute_weights.prepare(format, contract.data(), n, k) ==
+            Status::kOk);
+    constexpr long long m = 3;
+    std::vector<float> x(static_cast<std::size_t>(m * k));
+    for (std::size_t index = 0; index < x.size(); ++index) {
+      x[index] = static_cast<float>((index * 17) % 29) / 29.0f - 0.5f;
+    }
+    std::vector<float> expected(static_cast<std::size_t>(m * n));
+    std::vector<float> actual(expected.size());
+    REQUIRE(qgemm(format, contract.data(), x.data(), expected.data(), m, n,
+                  k) == Status::kOk);
+    REQUIRE(qgemm_prepacked(compute_weights, x.data(), actual.data(), m) ==
+            Status::kOk);
+    for (std::size_t index = 0; index < actual.size(); ++index) {
+      if (std::fabs(expected[index] - actual[index]) >
+          2e-4f * (1.0f + std::fabs(expected[index]))) {
+        std::cerr << "panel compute mismatch for format "
+                  << static_cast<int>(format) << " at " << index
+                  << ": expected " << expected[index] << ", got "
+                  << actual[index] << '\n';
+        return false;
       }
     }
   }

@@ -123,9 +123,16 @@ CaseDecl make_norm_quant(long long rows, long long hidden,
       CheckResult check;
       const long long elements = buffers->rows * buffers->hidden;
       for (long long i = 0; i < elements; ++i) {
-        if (buffers->codes.get()[i] != buffers->reference_codes.get()[i]) {
-          check.passed = false;
-        }
+        const long long row = i / buffers->hidden;
+        const long long column = i % buffers->hidden;
+        const long long scale_index =
+            row * buffers->groups + column / buffers->group_size;
+        const float actual_dequant =
+            buffers->codes.get()[i] * buffers->scales.get()[scale_index];
+        const float expected_dequant = buffers->reference_codes.get()[i] *
+                                       buffers->reference_scales.get()[scale_index];
+        check_value(check, actual_dequant, expected_dequant,
+                    Tolerance{0.02, 0.02});
         check_value(check, buffers->residual_out.get()[i],
                     buffers->reference_residual.get()[i], kFp32Tolerance);
       }

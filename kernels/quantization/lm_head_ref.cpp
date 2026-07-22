@@ -8,6 +8,7 @@
 
 #include "kernels/common/validation.h"
 #include "quixicore_cpu/ops.h"
+#include "src/memory/workspace_internal.h"
 
 namespace quixicore_cpu {
 namespace {
@@ -44,6 +45,171 @@ Status dense_logits(const float* hidden_states, const float* weights,
                          hidden, vocab, LinearActivation::kNone);
 }
 
+bool better_logit(float value, int token, float incumbent,
+                  int incumbent_token) {
+  return value > incumbent ||
+         (value == incumbent && token < incumbent_token);
+}
+
+// Projects vocabulary tiles and retains only the final selection set. The
+// packed row layout is contiguous for every GGUF format, so a tile is itself
+// a valid smaller GEMV without repacking weights.
+Status streaming_quantized_select(
+    QuantFormat format, const void* packed_weights,
+    const float* hidden_states, const float* bias, int* token_ids,
+    long long rows, long long vocab, long long hidden, int retained,
+    float temperature, std::uint32_t seed, bool sample_top_k) {
+  if (retained <= 0 || retained > vocab || !std::isfinite(temperature) ||
+      temperature < 0.0f) {
+    return Status::kInvalidShape;
+  }
+  std::size_t packed_bytes = 0;
+  const Status packed_status =
+      qgemv_packed_size(format, vocab, hidden, &packed_bytes);
+  if (packed_status != Status::kOk) return packed_status;
+  const std::size_t row_bytes = packed_bytes / static_cast<std::size_t>(vocab);
+  constexpr long long kVocabularyTile = 4096;
+  detail::WorkspaceFrame workspace;
+  float* tile_logits = workspace.allocate<float>(kVocabularyTile);
+  float* retained_logits = workspace.allocate<float>(
+      static_cast<std::size_t>(rows * retained));
+  int* retained_ids = workspace.allocate<int>(
+      static_cast<std::size_t>(rows * retained));
+  int* sampled = sample_top_k
+                     ? workspace.allocate<int>(static_cast<std::size_t>(rows))
+                     : nullptr;
+  if (tile_logits == nullptr || retained_logits == nullptr ||
+      retained_ids == nullptr || (sample_top_k && sampled == nullptr)) {
+    return Status::kOutOfMemory;
+  }
+  const auto* packed = static_cast<const std::uint8_t*>(packed_weights);
+  for (long long row = 0; row < rows; ++row) {
+    float* row_logits = retained_logits + row * retained;
+    int* row_ids = retained_ids + row * retained;
+    int count = 0;
+    for (long long token_base = 0; token_base < vocab;
+         token_base += kVocabularyTile) {
+      const long long tile = std::min(kVocabularyTile, vocab - token_base);
+      const Status status = qgemv(
+          format, packed + static_cast<std::size_t>(token_base) * row_bytes,
+          hidden_states + row * hidden, tile_logits, tile, hidden);
+      if (status != Status::kOk) return status;
+      for (long long local = 0; local < tile; ++local) {
+        const int token = static_cast<int>(token_base + local);
+        const float value = tile_logits[local] +
+                            (bias != nullptr ? bias[token] : 0.0f);
+        if (std::isnan(value) || value == std::numeric_limits<float>::infinity()) {
+          return Status::kInvalidArgument;
+        }
+        int position = count;
+        while (position > 0 &&
+               better_logit(value, token, row_logits[position - 1],
+                            row_ids[position - 1])) {
+          --position;
+        }
+        if (position >= retained) continue;
+        const int upper = std::min(count, retained - 1);
+        for (int item = upper; item > position; --item) {
+          row_logits[item] = row_logits[item - 1];
+          row_ids[item] = row_ids[item - 1];
+        }
+        row_logits[position] = value;
+        row_ids[position] = token;
+        if (count < retained) ++count;
+      }
+    }
+    if (count != retained) return Status::kInvalidArgument;
+    if (!sample_top_k) token_ids[row] = row_ids[0];
+  }
+  if (!sample_top_k) return Status::kOk;
+  const Status sample_status = top_k_sample(
+      retained_logits, sampled, rows, retained, retained, temperature, seed);
+  if (sample_status != Status::kOk) return sample_status;
+  for (long long row = 0; row < rows; ++row) {
+    token_ids[row] = retained_ids[row * retained + sampled[row]];
+  }
+  return Status::kOk;
+}
+
+Status streaming_quantized_masked_topk(
+    QuantFormat format, const void* packed_weights,
+    const float* hidden_states, const float* bias,
+    const std::uint8_t* allow_mask, int* token_ids,
+    float* log_probabilities, long long rows, long long vocab,
+    long long hidden, int top_k, bool normalize_allowed) {
+  std::size_t packed_bytes = 0;
+  const Status packed_status =
+      qgemv_packed_size(format, vocab, hidden, &packed_bytes);
+  if (packed_status != Status::kOk) return packed_status;
+  const std::size_t row_bytes = packed_bytes / static_cast<std::size_t>(vocab);
+  constexpr long long kVocabularyTile = 4096;
+  detail::WorkspaceFrame workspace;
+  float* tile_logits = workspace.allocate<float>(kVocabularyTile);
+  float* best_logits =
+      workspace.allocate<float>(static_cast<std::size_t>(top_k));
+  int* best_ids = workspace.allocate<int>(static_cast<std::size_t>(top_k));
+  if (tile_logits == nullptr || best_logits == nullptr || best_ids == nullptr) {
+    return Status::kOutOfMemory;
+  }
+  const auto* packed = static_cast<const std::uint8_t*>(packed_weights);
+  const long long mask_stride = (vocab + 7) / 8;
+  for (long long row = 0; row < rows; ++row) {
+    int count = 0;
+    double maximum = -std::numeric_limits<double>::infinity();
+    double denominator = 0.0;
+    for (long long token_base = 0; token_base < vocab;
+         token_base += kVocabularyTile) {
+      const long long tile = std::min(kVocabularyTile, vocab - token_base);
+      const Status status = qgemv(
+          format, packed + static_cast<std::size_t>(token_base) * row_bytes,
+          hidden_states + row * hidden, tile_logits, tile, hidden);
+      if (status != Status::kOk) return status;
+      for (long long local = 0; local < tile; ++local) {
+        const int token = static_cast<int>(token_base + local);
+        const float value = tile_logits[local] +
+                            (bias != nullptr ? bias[token] : 0.0f);
+        const bool allowed =
+            (allow_mask[row * mask_stride + token / 8] &
+             static_cast<std::uint8_t>(0x80u >> (token % 8))) != 0;
+        if (!normalize_allowed || allowed) {
+          if (static_cast<double>(value) > maximum) {
+            denominator = denominator * std::exp(maximum - value) + 1.0;
+            maximum = value;
+          } else {
+            denominator += std::exp(static_cast<double>(value) - maximum);
+          }
+        }
+        if (!allowed) continue;
+        int position = count;
+        while (position > 0 &&
+               better_logit(value, token, best_logits[position - 1],
+                            best_ids[position - 1])) {
+          --position;
+        }
+        if (position >= top_k) continue;
+        const int upper = std::min(count, top_k - 1);
+        for (int item = upper; item > position; --item) {
+          best_logits[item] = best_logits[item - 1];
+          best_ids[item] = best_ids[item - 1];
+        }
+        best_logits[position] = value;
+        best_ids[position] = token;
+        if (count < top_k) ++count;
+      }
+    }
+    if (count < top_k || !(denominator > 0.0)) {
+      return Status::kInvalidArgument;
+    }
+    const double lse = maximum + std::log(denominator);
+    for (int item = 0; item < top_k; ++item) {
+      token_ids[row * top_k + item] = best_ids[item];
+      log_probabilities[row * top_k + item] =
+          static_cast<float>(best_logits[item] - lse);
+    }
+  }
+  return Status::kOk;
+}
+
 }  // namespace
 
 Status quantized_lm_head_sample(
@@ -57,6 +223,16 @@ Status quantized_lm_head_sample(
   if (!detail::all_nonnull(packed_weights, hidden_states, token_ids)) {
     return Status::kInvalidArgument;
   }
+  if (mode == LmHeadSampling::kArgmax) {
+    return streaming_quantized_select(
+        format, packed_weights, hidden_states, bias, token_ids, rows, vocab,
+        hidden, 1, 0.0f, seed, false);
+  }
+  if (mode == LmHeadSampling::kTopK) {
+    return streaming_quantized_select(
+        format, packed_weights, hidden_states, bias, token_ids, rows, vocab,
+        hidden, k, temperature, seed, true);
+  }
   std::vector<float> logits(static_cast<std::size_t>(rows * vocab));
   Status status = qgemm(format, packed_weights, hidden_states, logits.data(),
                         rows, vocab, hidden);
@@ -64,13 +240,12 @@ Status quantized_lm_head_sample(
   add_bias(logits.data(), bias, rows, vocab);
   switch (mode) {
     case LmHeadSampling::kArgmax:
-      return argmax_sample(logits.data(), token_ids, rows, vocab);
+      break;
     case LmHeadSampling::kCategorical:
       return sample_categorical(logits.data(), token_ids, rows, vocab,
                                 temperature, seed);
     case LmHeadSampling::kTopK:
-      return top_k_sample(logits.data(), token_ids, rows, vocab, k,
-                          temperature, seed);
+      break;
     case LmHeadSampling::kTopP:
       return top_p_sample(logits.data(), token_ids, rows, vocab, top_p,
                           temperature, seed);
@@ -123,36 +298,9 @@ Status quantized_lm_head_masked_topk(
                            token_ids, log_probabilities)) {
     return Status::kInvalidArgument;
   }
-  std::vector<float> logits(static_cast<std::size_t>(rows * vocab));
-  Status status = qgemm(format, packed_weights, hidden_states, logits.data(),
-                        rows, vocab, hidden);
-  if (status != Status::kOk) return status;
-  add_bias(logits.data(), bias, rows, vocab);
-  const long long mask_stride = (vocab + 7) / 8;
-  for (long long row = 0; row < rows; ++row) {
-    std::vector<int> allowed;
-    std::vector<int> all(static_cast<std::size_t>(vocab));
-    std::iota(all.begin(), all.end(), 0);
-    for (int token : all) {
-      if (allow_mask[row * mask_stride + token / 8] &
-          static_cast<std::uint8_t>(0x80u >> (token % 8))) {
-        allowed.push_back(token);
-      }
-    }
-    if (allowed.empty() || static_cast<int>(allowed.size()) < top_k) {
-      return Status::kInvalidArgument;
-    }
-    const float* row_logits = logits.data() + row * vocab;
-    const double lse = logsumexp_selected(row_logits,
-                                          normalize_allowed ? allowed : all);
-    top_ids(row_logits, &allowed, top_k);
-    for (int item = 0; item < top_k; ++item) {
-      token_ids[row * top_k + item] = allowed[item];
-      log_probabilities[row * top_k + item] =
-          static_cast<float>(row_logits[allowed[item]] - lse);
-    }
-  }
-  return Status::kOk;
+  return streaming_quantized_masked_topk(
+      format, packed_weights, hidden_states, bias, allow_mask, token_ids,
+      log_probabilities, rows, vocab, hidden, top_k, normalize_allowed);
 }
 
 Status lm_head_masked_topk(

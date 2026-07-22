@@ -212,16 +212,22 @@ Status paged_attention(const float* q, const float* key_cache,
           score += static_cast<double>(query[d]) * key[d];
         }
         score *= score_scale;
-        const double next_maximum = std::max(maximum, score);
-        const double old_weight = std::exp(maximum - next_maximum);
-        const double new_weight = std::exp(score - next_maximum);
-        denominator = denominator * old_weight + new_weight;
         const float* value = value_cache + cache_offset;
-        for (long long d = 0; d < head_dim; ++d) {
-          destination[d] = static_cast<float>(destination[d] * old_weight +
-                                              value[d] * new_weight);
+        if (score > maximum) {
+          const double old_weight = std::exp(maximum - score);
+          denominator = denominator * old_weight + 1.0;
+          for (long long d = 0; d < head_dim; ++d) {
+            destination[d] =
+                static_cast<float>(destination[d] * old_weight + value[d]);
+          }
+          maximum = score;
+        } else {
+          const double weight = std::exp(score - maximum);
+          denominator += weight;
+          for (long long d = 0; d < head_dim; ++d) {
+            destination[d] += static_cast<float>(value[d] * weight);
+          }
         }
-        maximum = next_maximum;
       }
       if (denominator > 0.0) {
         const float inverse = static_cast<float>(1.0 / denominator);
@@ -278,15 +284,21 @@ Status mla_decode(const float* q, const float* kv_cache,
           score += static_cast<double>(query[d]) * item[d];
         }
         score *= score_scale;
-        const double next_maximum = std::max(maximum, score);
-        const double old_weight = std::exp(maximum - next_maximum);
-        const double new_weight = std::exp(score - next_maximum);
-        denominator = denominator * old_weight + new_weight;
-        for (long long d = 0; d < latent_dim; ++d) {
-          destination[d] = static_cast<float>(destination[d] * old_weight +
-                                              item[d] * new_weight);
+        if (score > maximum) {
+          const double old_weight = std::exp(maximum - score);
+          denominator = denominator * old_weight + 1.0;
+          for (long long d = 0; d < latent_dim; ++d) {
+            destination[d] =
+                static_cast<float>(destination[d] * old_weight + item[d]);
+          }
+          maximum = score;
+        } else {
+          const double weight = std::exp(score - maximum);
+          denominator += weight;
+          for (long long d = 0; d < latent_dim; ++d) {
+            destination[d] += static_cast<float>(item[d] * weight);
+          }
         }
-        maximum = next_maximum;
       }
       if (denominator > 0.0) {
         const float inverse = static_cast<float>(1.0 / denominator);

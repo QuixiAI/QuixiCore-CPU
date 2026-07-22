@@ -186,7 +186,7 @@ int main() {
         std::accumulate(unpacked.begin(), unpacked.end(), 0.0);
     REQUIRE(std::fabs(output - expected) <=
             1e-4 + 1e-5 * std::fabs(expected));
-    REQUIRE(std::string(qgemv_variant(fixture.format)) == "ref");
+    REQUIRE(std::string(qgemv_variant(fixture.format)) != "unsupported");
     REQUIRE(qgemv_pack(fixture.format, ones.data(), 1, fixture.block,
                        packed.data()) == Status::kUnsupportedFormat);
   }

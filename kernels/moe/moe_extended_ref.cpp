@@ -7,8 +7,14 @@
 #include <numeric>
 #include <vector>
 
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include <arm_neon.h>
+#endif
+
 #include "kernels/common/validation.h"
+#include "kernels/common/fp16.h"
 #include "kernels/quantization/gguf_ref.h"
+#include "kernels/quantization/qgemv_w8a8.h"
 #include "quixicore_cpu/qgemm.h"
 #include "quixicore_cpu/qgemv.h"
 #include "quixicore_cpu/quantization.h"
@@ -22,6 +28,64 @@ double softplus(double x) {
   if (x > 20.0) return x;
   if (x < -20.0) return std::exp(x);
   return std::log1p(std::exp(x));
+}
+
+float decoded_block_dot(const float* weights, const float* input,
+                        long long count) {
+#if defined(__aarch64__) || defined(_M_ARM64)
+  float32x4_t acc0 = vdupq_n_f32(0.0f);
+  float32x4_t acc1 = vdupq_n_f32(0.0f);
+  long long item = 0;
+  for (; item + 7 < count; item += 8) {
+    acc0 = vfmaq_f32(acc0, vld1q_f32(weights + item),
+                     vld1q_f32(input + item));
+    acc1 = vfmaq_f32(acc1, vld1q_f32(weights + item + 4),
+                     vld1q_f32(input + item + 4));
+  }
+  float sum = vaddvq_f32(vaddq_f32(acc0, acc1));
+#else
+  float sum = 0.0f;
+  long long item = 0;
+#endif
+  for (; item < count; ++item) sum += weights[item] * input[item];
+  return sum;
+}
+
+#if defined(__aarch64__) || defined(_M_ARM64)
+float int8x16_dot(int8x16_t weights, const float* input) {
+  const int16x8_t low = vmovl_s8(vget_low_s8(weights));
+  const int16x8_t high = vmovl_s8(vget_high_s8(weights));
+  float32x4_t sum = vmulq_f32(
+      vcvtq_f32_s32(vmovl_s16(vget_low_s16(low))), vld1q_f32(input));
+  sum = vfmaq_f32(sum, vcvtq_f32_s32(vmovl_s16(vget_high_s16(low))),
+                  vld1q_f32(input + 4));
+  sum = vfmaq_f32(sum, vcvtq_f32_s32(vmovl_s16(vget_low_s16(high))),
+                  vld1q_f32(input + 8));
+  sum = vfmaq_f32(sum, vcvtq_f32_s32(vmovl_s16(vget_high_s16(high))),
+                  vld1q_f32(input + 12));
+  return vaddvq_f32(sum);
+}
+#endif
+
+float q4_block_dot(const quant::BlockQ4_0& block, const float* input) {
+#if defined(__aarch64__) || defined(_M_ARM64)
+  const uint8x16_t codes = vld1q_u8(block.qs);
+  const uint8x16_t mask = vdupq_n_u8(15);
+  const uint8x16_t offset = vdupq_n_u8(8);
+  const int8x16_t low = vreinterpretq_s8_u8(
+      vsubq_u8(vandq_u8(codes, mask), offset));
+  const int8x16_t high = vreinterpretq_s8_u8(
+      vsubq_u8(vshrq_n_u8(codes, 4), offset));
+  const float dot =
+      int8x16_dot(low, input) + int8x16_dot(high, input + 16);
+#else
+  float dot = 0.0f;
+  for (int item = 0; item < 16; ++item) {
+    dot += static_cast<float>((block.qs[item] & 15) - 8) * input[item];
+    dot += static_cast<float>((block.qs[item] >> 4) - 8) * input[item + 16];
+  }
+#endif
+  return fp16_to_fp32(block.d) * dot;
 }
 
 Status grouped_qprojection(const float* x, const void* packed_weights,
@@ -654,26 +718,117 @@ Status moe_grouped_qswiglu(
   }
   const long long outputs = 2 * intermediate_dim;
   if (!detail::valid_product({rows, outputs})) return Status::kInvalidShape;
-  std::vector<float> projection(static_cast<std::size_t>(rows * outputs));
-  Status status = grouped_qprojection(
-      x, packed_weights, expert_ids, bias, projection.data(), rows, experts,
-      input_dim, outputs, format, use_bias);
+  std::size_t expert_bytes = 0;
+  Status status =
+      qgemv_packed_size(format, outputs, input_dim, &expert_bytes);
   if (status != Status::kOk) return status;
+  long long block_size = 0;
+  std::size_t block_bytes = 0;
+  if (!quant::gguf_format_info(format, &block_size, &block_bytes)) {
+    return Status::kUnsupportedFormat;
+  }
+  const long long blocks_per_row = input_dim / block_size;
+  const std::size_t weight_row_bytes =
+      static_cast<std::size_t>(blocks_per_row) * block_bytes;
+
+  std::vector<long long> offsets(static_cast<std::size_t>(experts + 1), 0);
   for (long long row = 0; row < rows; ++row) {
-    for (long long item = 0; item < intermediate_dim; ++item) {
-      float gate = projection[row * outputs + item];
-      float up = projection[row * outputs + intermediate_dim + item];
-      if (oai_mode) {
-        gate = std::min(gate, limit);
-        up = std::clamp(up, -limit, limit);
-        out[row * intermediate_dim + item] =
-            gate / (1.0f + std::exp(-alpha * gate)) * (1.0f + up);
-      } else {
-        out[row * intermediate_dim + item] =
-            gate / (1.0f + std::exp(-gate)) * up;
-      }
+    const int expert = expert_ids[row];
+    if (expert < 0 || expert >= experts) return Status::kInvalidArgument;
+    ++offsets[static_cast<std::size_t>(expert + 1)];
+  }
+  for (long long expert = 0; expert < experts; ++expert) {
+    offsets[static_cast<std::size_t>(expert + 1)] +=
+        offsets[static_cast<std::size_t>(expert)];
+  }
+  std::vector<long long> cursor = offsets;
+  std::vector<long long> order(static_cast<std::size_t>(rows));
+  for (long long row = 0; row < rows; ++row) {
+    order[static_cast<std::size_t>(
+        cursor[static_cast<std::size_t>(expert_ids[row])]++)] = row;
+  }
+  std::vector<int> active;
+  for (long long expert = 0; expert < experts; ++expert) {
+    if (offsets[static_cast<std::size_t>(expert)] !=
+        offsets[static_cast<std::size_t>(expert + 1)]) {
+      active.push_back(static_cast<int>(expert));
     }
   }
+
+  const auto* weights = static_cast<const std::uint8_t*>(packed_weights);
+  const long long tasks =
+      static_cast<long long>(active.size()) * intermediate_dim;
+  threading::parallel_ranges(tasks, 8,
+                             [&](long long begin, long long end, int) {
+    thread_local std::vector<float> gate_accumulators;
+    thread_local std::vector<float> up_accumulators;
+    alignas(64) float gate_weights[256];
+    alignas(64) float up_weights[256];
+    for (long long task = begin; task < end; ++task) {
+      const int expert =
+          active[static_cast<std::size_t>(task / intermediate_dim)];
+      const long long output = task % intermediate_dim;
+      const long long first = offsets[static_cast<std::size_t>(expert)];
+      const long long last = offsets[static_cast<std::size_t>(expert + 1)];
+      const long long count = last - first;
+      gate_accumulators.assign(static_cast<std::size_t>(count), 0.0f);
+      up_accumulators.assign(static_cast<std::size_t>(count), 0.0f);
+      const std::uint8_t* expert_weights =
+          weights + static_cast<std::size_t>(expert) * expert_bytes;
+      const std::uint8_t* gate_row =
+          expert_weights + static_cast<std::size_t>(output) * weight_row_bytes;
+      const std::uint8_t* up_row =
+          expert_weights +
+          static_cast<std::size_t>(intermediate_dim + output) *
+              weight_row_bytes;
+      for (long long block = 0; block < blocks_per_row; ++block) {
+        const std::uint8_t* gate_block =
+            gate_row + static_cast<std::size_t>(block) * block_bytes;
+        const std::uint8_t* up_block =
+            up_row + static_cast<std::size_t>(block) * block_bytes;
+        if (format != QuantFormat::kQ4_0) {
+          quant::gguf_dequant_block_ref(format, gate_block, gate_weights);
+          quant::gguf_dequant_block_ref(format, up_block, up_weights);
+        }
+        const long long input_base = block * block_size;
+        for (long long routed = 0; routed < count; ++routed) {
+          const long long row =
+              order[static_cast<std::size_t>(first + routed)];
+          const float* input = x + row * input_dim + input_base;
+          if (format == QuantFormat::kQ4_0) {
+            gate_accumulators[static_cast<std::size_t>(routed)] += q4_block_dot(
+                *reinterpret_cast<const quant::BlockQ4_0*>(gate_block), input);
+            up_accumulators[static_cast<std::size_t>(routed)] += q4_block_dot(
+                *reinterpret_cast<const quant::BlockQ4_0*>(up_block), input);
+          } else {
+            gate_accumulators[static_cast<std::size_t>(routed)] +=
+                decoded_block_dot(gate_weights, input, block_size);
+            up_accumulators[static_cast<std::size_t>(routed)] +=
+                decoded_block_dot(up_weights, input, block_size);
+          }
+        }
+      }
+      for (long long routed = 0; routed < count; ++routed) {
+        const long long row = order[static_cast<std::size_t>(first + routed)];
+        float gate = gate_accumulators[static_cast<std::size_t>(routed)];
+        float up = up_accumulators[static_cast<std::size_t>(routed)];
+        if (use_bias) {
+          const long long bias_base = static_cast<long long>(expert) * outputs;
+          gate += bias[bias_base + output];
+          up += bias[bias_base + intermediate_dim + output];
+        }
+        if (oai_mode) {
+          gate = std::min(gate, limit);
+          up = std::clamp(up, -limit, limit);
+          out[row * intermediate_dim + output] =
+              gate / (1.0f + std::exp(-alpha * gate)) * (1.0f + up);
+        } else {
+          out[row * intermediate_dim + output] =
+              gate / (1.0f + std::exp(-gate)) * up;
+        }
+      }
+    }
+  });
   return Status::kOk;
 }
 

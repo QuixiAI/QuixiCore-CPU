@@ -70,17 +70,25 @@ Status mla_fp8_impl(
                             format);
         }
         score *= factor;
-        const double next_maximum = std::max(maximum, score);
-        const double old_weight = std::exp(maximum - next_maximum);
-        const double new_weight = std::exp(score - next_maximum);
-        denominator = denominator * old_weight + new_weight;
-        for (long long dim = 0; dim < width; ++dim) {
-          destination[dim] = static_cast<float>(
-              destination[dim] * old_weight +
-              mla_code(codes, scales, vector, dim, width, group_size, format) *
-                  new_weight);
+        if (score > maximum) {
+          const double old_weight = std::exp(maximum - score);
+          denominator = denominator * old_weight + 1.0;
+          for (long long dim = 0; dim < width; ++dim) {
+            destination[dim] = static_cast<float>(
+                destination[dim] * old_weight +
+                mla_code(codes, scales, vector, dim, width, group_size,
+                         format));
+          }
+          maximum = score;
+        } else {
+          const double weight = std::exp(score - maximum);
+          denominator += weight;
+          for (long long dim = 0; dim < width; ++dim) {
+            destination[dim] += static_cast<float>(
+                mla_code(codes, scales, vector, dim, width, group_size,
+                         format) * weight);
+          }
         }
-        maximum = next_maximum;
       }
       if (denominator > 0.0) {
         for (long long dim = 0; dim < width; ++dim) {

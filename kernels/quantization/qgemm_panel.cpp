@@ -7,6 +7,7 @@
 
 #include "kernels/common/fp16.h"
 #include "kernels/common/validation.h"
+#include "kernels/quantization/gguf_ref.h"
 #include "kernels/quantization/qgemv.h"
 #include "kernels/quantization/qgemv_w8a8.h"
 #include "quixicore_cpu/threading.h"
@@ -49,8 +50,10 @@ struct PanelContext {
   long long m;
   long long n;
   long long row_tile;
+  long long block_size;
   long long blocks_per_row;
   std::size_t block_bytes;
+  QuantFormat format;
 };
 
 const std::uint8_t* panel_block(const PanelContext& context, long long panel,
@@ -153,6 +156,50 @@ void q8_panel_rows(void* opaque, long long begin, long long end, int worker) {
   }
 }
 
+void generic_panel_rows(void* opaque, long long begin, long long end,
+                        int worker) {
+  const auto& context = *static_cast<const PanelContext*>(opaque);
+  const long long lane_stride = context.m;
+  const long long tile_elements = context.row_tile * context.m;
+  float* accumulator =
+      context.scratch + static_cast<long long>(worker) * tile_elements * 2;
+  float* block_sum = accumulator + tile_elements;
+  alignas(64) float decoded[256];
+  for (long long panel = begin; panel < end; ++panel) {
+    const long long first_row = panel * context.row_tile;
+    const long long lanes = std::min(context.row_tile, context.n - first_row);
+    std::fill_n(accumulator, lanes * lane_stride, 0.0f);
+    for (long long block = 0; block < context.blocks_per_row; ++block) {
+      for (long long lane = 0; lane < lanes; ++lane) {
+        quant::gguf_dequant_block_ref(
+            context.format, panel_block(context, panel, block, lane), decoded);
+        float* sums = block_sum + lane * lane_stride;
+        std::fill_n(sums, context.m, 0.0f);
+        for (long long element = 0; element < context.block_size; ++element) {
+          const float weight = decoded[element];
+          const float* values =
+              context.transposed_x +
+              (block * context.block_size + element) * context.m;
+          for (long long row = 0; row < context.m; ++row) {
+            sums[row] += weight * values[row];
+          }
+        }
+        float* accumulated = accumulator + lane * lane_stride;
+        for (long long row = 0; row < context.m; ++row) {
+          accumulated[row] += sums[row];
+        }
+      }
+    }
+    for (long long lane = 0; lane < lanes; ++lane) {
+      const long long output = first_row + lane;
+      const float* accumulated = accumulator + lane * lane_stride;
+      for (long long row = 0; row < context.m; ++row) {
+        context.output[row * context.n + output] = accumulated[row];
+      }
+    }
+  }
+}
+
 }  // namespace
 
 Status qgemm_prepacked(const CpuPackedWeights& weights, const float* x,
@@ -166,12 +213,13 @@ Status qgemm_prepacked(const CpuPackedWeights& weights, const float* x,
                            weights.panel_data())) {
     return Status::kInvalidArgument;
   }
-  if (info.format != QuantFormat::kQ4_0 &&
-      info.format != QuantFormat::kQ8_0) {
-    return Status::kUnsupportedFormat;
-  }
   if (m == 1) {
     return qgemv(info.format, weights.contract_data(), x, y, info.rows,
+                 info.columns);
+  }
+  if (m < 64 && (info.format == QuantFormat::kQ4_0 ||
+                 info.format == QuantFormat::kQ8_0)) {
+    return qgemm(info.format, weights.contract_data(), x, y, m, info.rows,
                  info.columns);
   }
 
@@ -209,14 +257,16 @@ Status qgemm_prepacked(const CpuPackedWeights& weights, const float* x,
                        m,
                        info.rows,
                        info.row_tile,
+                       info.block_size,
                        info.blocks_per_row,
-                       info.block_bytes};
+                       info.block_bytes,
+                       info.format};
   const long long panels =
       info.rows / info.row_tile + (info.rows % info.row_tile != 0 ? 1 : 0);
-  threading::parallel_ranges_impl(
-      panels, 1,
-      info.format == QuantFormat::kQ4_0 ? q4_panel_rows : q8_panel_rows,
-      &context);
+  auto kernel = generic_panel_rows;
+  if (info.format == QuantFormat::kQ4_0) kernel = q4_panel_rows;
+  if (info.format == QuantFormat::kQ8_0) kernel = q8_panel_rows;
+  threading::parallel_ranges_impl(panels, 1, kernel, &context);
   return Status::kOk;
 }
 

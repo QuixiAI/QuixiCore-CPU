@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
+#include <vector>
 
 #include "kernels/common/validation.h"
 #include "src/threading/thread_pool.h"
@@ -11,7 +13,8 @@ namespace quixicore_cpu {
 Status mamba2(const float* c, const float* b, const float* x,
               const float* cumulative_log, float* y, long long batch,
               long long heads, long long sequence, long long dim) {
-  if (!detail::valid_product({batch, heads, sequence, dim})) {
+  if (!detail::valid_product({batch, heads, sequence, dim}) ||
+      !detail::valid_product({dim, dim})) {
     return Status::kInvalidShape;
   }
   if (!detail::all_nonnull(c, b, x, cumulative_log, y)) {
@@ -19,25 +22,35 @@ Status mamba2(const float* c, const float* b, const float* x,
   }
   threading::parallel_ranges(batch * heads, 1,
                              [&](long long begin, long long end, int) {
+    thread_local std::vector<double> state;
     for (long long bh = begin; bh < end; ++bh) {
       const long long offset = bh * sequence * dim;
       const float* decay = cumulative_log + bh * sequence;
+      state.assign(static_cast<std::size_t>(dim * dim), 0.0);
       for (long long target = 0; target < sequence; ++target) {
+        const double transition =
+            target == 0
+                ? 0.0
+                : std::exp(static_cast<double>(decay[target] -
+                                               decay[target - 1]));
+        const float* bt = b + offset + target * dim;
+        const float* xt = x + offset + target * dim;
+        for (long long key = 0; key < dim; ++key) {
+          double* state_row = state.data() + key * dim;
+          for (long long value = 0; value < dim; ++value) {
+            state_row[value] =
+                (target == 0 ? 0.0 : transition * state_row[value]) +
+                static_cast<double>(bt[key]) * xt[value];
+          }
+        }
         float* destination = y + offset + target * dim;
-        std::fill_n(destination, dim, 0.0f);
-        for (long long source = 0; source <= target; ++source) {
-          double similarity = 0.0;
-          for (long long d = 0; d < dim; ++d) {
-            similarity += double(c[offset + target * dim + d]) *
-                          b[offset + source * dim + d];
+        const float* ct = c + offset + target * dim;
+        for (long long value = 0; value < dim; ++value) {
+          double sum = 0.0;
+          for (long long key = 0; key < dim; ++key) {
+            sum += static_cast<double>(ct[key]) * state[key * dim + value];
           }
-          const double coefficient =
-              similarity * std::exp(static_cast<double>(decay[target] -
-                                                        decay[source]));
-          for (long long d = 0; d < dim; ++d) {
-            destination[d] +=
-                static_cast<float>(coefficient * x[offset + source * dim + d]);
-          }
+          destination[value] = static_cast<float>(sum);
         }
       }
     }
@@ -156,21 +169,95 @@ Status fft_convolution(const float* x, const float* kernel, float* out,
     return Status::kInvalidShape;
   }
   if (!detail::all_nonnull(x, kernel, out)) return Status::kInvalidArgument;
+  const bool radix2 = (length & (length - 1)) == 0;
+  if (!radix2 || length < 64) {
+    threading::parallel_ranges(batch * heads, 1,
+                               [&](long long begin, long long end, int) {
+      for (long long bh = begin; bh < end; ++bh) {
+        const long long head = bh % heads;
+        const float* xr = x + bh * length;
+        const float* kr = kernel + head * length;
+        float* destination = out + bh * length;
+        for (long long target = 0; target < length; ++target) {
+          double accumulator = 0.0;
+          for (long long source = 0; source < length; ++source) {
+            long long kernel_index = target - source;
+            if (kernel_index < 0) kernel_index += length;
+            accumulator += double(xr[source]) * kr[kernel_index];
+          }
+          destination[target] = static_cast<float>(accumulator);
+        }
+      }
+    });
+    return Status::kOk;
+  }
+
+  using Complex = std::complex<double>;
+  const auto transform = [](Complex* values, long long count, bool inverse) {
+    for (long long item = 1, reversed = 0; item < count; ++item) {
+      long long bit = count >> 1;
+      while (reversed & bit) {
+        reversed ^= bit;
+        bit >>= 1;
+      }
+      reversed ^= bit;
+      if (item < reversed) std::swap(values[item], values[reversed]);
+    }
+    constexpr double kPi = 3.141592653589793238462643383279502884;
+    for (long long width = 2; width <= count;) {
+      const double angle = (inverse ? 2.0 : -2.0) * kPi / width;
+      const Complex root(std::cos(angle), std::sin(angle));
+      for (long long base = 0; base < count; base += width) {
+        Complex phase(1.0, 0.0);
+        for (long long item = 0; item < width / 2; ++item) {
+          const Complex even = values[base + item];
+          const Complex odd = values[base + item + width / 2] * phase;
+          values[base + item] = even + odd;
+          values[base + item + width / 2] = even - odd;
+          phase *= root;
+        }
+      }
+      if (width == count) break;
+      width <<= 1;
+    }
+    if (inverse) {
+      const double scale = 1.0 / static_cast<double>(count);
+      for (long long item = 0; item < count; ++item) values[item] *= scale;
+    }
+  };
+
+  std::vector<Complex> kernel_spectrum(
+      static_cast<std::size_t>(heads * length));
+  threading::parallel_ranges(heads, 1,
+                             [&](long long begin, long long end, int) {
+    for (long long head = begin; head < end; ++head) {
+      Complex* spectrum = kernel_spectrum.data() + head * length;
+      for (long long item = 0; item < length; ++item) {
+        spectrum[item] = Complex(kernel[head * length + item], 0.0);
+      }
+      transform(spectrum, length, false);
+    }
+  });
   threading::parallel_ranges(batch * heads, 1,
                              [&](long long begin, long long end, int) {
+    thread_local std::vector<Complex> signal;
     for (long long bh = begin; bh < end; ++bh) {
       const long long head = bh % heads;
       const float* xr = x + bh * length;
-      const float* kr = kernel + head * length;
       float* destination = out + bh * length;
-      for (long long target = 0; target < length; ++target) {
-        double accumulator = 0.0;
-        for (long long source = 0; source < length; ++source) {
-          long long kernel_index = target - source;
-          if (kernel_index < 0) kernel_index += length;
-          accumulator += double(xr[source]) * kr[kernel_index];
-        }
-        destination[target] = static_cast<float>(accumulator);
+      signal.resize(static_cast<std::size_t>(length));
+      for (long long item = 0; item < length; ++item) {
+        signal[static_cast<std::size_t>(item)] = Complex(xr[item], 0.0);
+      }
+      transform(signal.data(), length, false);
+      const Complex* spectrum = kernel_spectrum.data() + head * length;
+      for (long long item = 0; item < length; ++item) {
+        signal[static_cast<std::size_t>(item)] *= spectrum[item];
+      }
+      transform(signal.data(), length, true);
+      for (long long item = 0; item < length; ++item) {
+        destination[item] =
+            static_cast<float>(signal[static_cast<std::size_t>(item)].real());
       }
     }
   });

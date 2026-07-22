@@ -11,6 +11,7 @@
 #include "harness/alloc.h"
 #include "harness/case.h"
 #include "harness/donotopt.h"
+#include "kernels/quantization/gguf_ref.h"
 #include "kernels/quantization/qgemv.h"
 #include "kernels/quantization/qgemv_w8a8.h"
 #include "quixicore_cpu/qgemv.h"
@@ -44,6 +45,27 @@ struct Buffers {
   long long n = 0;
   long long k = 0;
 };
+
+const char* format_name(QuantFormat format) {
+  switch (format) {
+    case QuantFormat::kQ4_K: return "q4_k";
+    case QuantFormat::kQ5_K: return "q5_k";
+    case QuantFormat::kQ6_K: return "q6_k";
+    case QuantFormat::kIQ4_NL: return "iq4_nl";
+    case QuantFormat::kIQ4_XS: return "iq4_xs";
+    case QuantFormat::kIQ2_XXS: return "iq2_xxs";
+    case QuantFormat::kIQ2_XS: return "iq2_xs";
+    case QuantFormat::kIQ3_XXS: return "iq3_xxs";
+    case QuantFormat::kIQ1_S: return "iq1_s";
+    default: return "gguf";
+  }
+}
+
+void set_half(std::uint8_t* bytes, std::size_t offset, float one = 1.0f) {
+  const std::uint16_t bits = one == 0.0f ? 0x0000u : 0x3c00u;
+  bytes[offset] = static_cast<std::uint8_t>(bits & 0xffu);
+  bytes[offset + 1] = static_cast<std::uint8_t>(bits >> 8);
+}
 
 void decomposed_gemv(Buffers& buffers) {
   if (quixicore_cpu::qgemv_unpack(
@@ -159,7 +181,8 @@ CaseDecl make_q4_weight_only(long long n, long long k) {
   decl.shape = {{"m", 1}, {"n", n}, {"k", k}};
   decl.dtype = "f32";
   decl.format = "q4_0";
-  decl.notes = "public q4_0 weight-only qgemv, portable reference";
+  decl.notes = std::string("public q4_0 weight-only qgemv, variant ") +
+               quixicore_cpu::qgemv_variant(QuantFormat::kQ4_0);
   decl.flops = 2.0 * n * k;
   decl.weight_bytes = static_cast<double>(n) * (k / 32) * 18.0;
   decl.make = [n, k]() {
@@ -253,6 +276,92 @@ CaseDecl make_w8a8(QuantFormat format, long long n, long long k) {
   return decl;
 }
 
+CaseDecl make_gguf_weight_only(QuantFormat format, long long n, long long k) {
+  const std::string name = format_name(format);
+  CaseDecl decl;
+  decl.kernel = "qgemv_formats";
+  decl.variant = name + "_N" + std::to_string(n) + "_K" + std::to_string(k);
+  decl.shape = {{"m", 1}, {"n", n}, {"k", k}};
+  decl.dtype = "f32";
+  decl.format = name;
+  decl.notes = std::string("GGUF block-decode SIMD GEMV, variant ") +
+               quixicore_cpu::qgemv_variant(format);
+  decl.flops = 2.0 * n * k;
+  std::size_t packed_size = 0;
+  if (quixicore_cpu::qgemv_packed_size(format, n, k, &packed_size) !=
+      Status::kOk) {
+    throw std::runtime_error("GGUF benchmark packed size failed");
+  }
+  decl.weight_bytes = static_cast<double>(packed_size);
+  decl.make = [format, n, k, packed_size]() {
+    long long block_size = 0;
+    std::size_t block_bytes = 0;
+    if (!quixicore_cpu::quant::gguf_format_info(
+            format, &block_size, &block_bytes)) {
+      throw std::runtime_error("GGUF format info failed");
+    }
+    auto buffers = std::make_shared<Buffers>();
+    buffers->format = format;
+    buffers->n = n;
+    buffers->k = k;
+    buffers->packed = aligned_alloc_array<std::uint8_t>(
+        static_cast<long long>(packed_size));
+    buffers->x = aligned_alloc_array<float>(k);
+    buffers->y = aligned_alloc_array<float>(n);
+    buffers->dequantized = aligned_alloc_array<float>(n);
+    Rng rng;
+    for (std::size_t i = 0; i < packed_size; ++i) {
+      buffers->packed.get()[i] =
+          static_cast<std::uint8_t>((i * 73u + 19u) & 0xffu);
+    }
+    for (long long i = 0; i < k; ++i) buffers->x.get()[i] = rng.next();
+    for (std::size_t offset = 0; offset < packed_size; offset += block_bytes) {
+      if (format == QuantFormat::kQ6_K) {
+        set_half(buffers->packed.get() + offset, 208);
+      } else {
+        set_half(buffers->packed.get() + offset, 0);
+        if (format == QuantFormat::kQ4_K || format == QuantFormat::kQ5_K) {
+          set_half(buffers->packed.get() + offset, 2, 0.0f);
+        }
+      }
+    }
+    CaseBody body;
+    body.target = [buffers]() {
+      if (quixicore_cpu::qgemv(
+              buffers->format, buffers->packed.get(), buffers->x.get(),
+              buffers->y.get(), buffers->n, buffers->k) != Status::kOk) {
+        throw std::runtime_error("GGUF qgemv failed");
+      }
+      do_not_optimize(buffers->y.get());
+    };
+    body.baselines.emplace_back("element_decode_ref", [buffers]() {
+      quixicore_cpu::quant::gguf_gemv_ref(
+          buffers->format, buffers->packed.get(), buffers->x.get(),
+          buffers->dequantized.get(), buffers->n, buffers->k);
+      do_not_optimize(buffers->dequantized.get());
+    });
+    body.check = [buffers]() {
+      if (quixicore_cpu::qgemv(
+              buffers->format, buffers->packed.get(), buffers->x.get(),
+              buffers->y.get(), buffers->n, buffers->k) != Status::kOk) {
+        throw std::runtime_error("GGUF qgemv failed");
+      }
+      quixicore_cpu::quant::gguf_gemv_ref(
+          buffers->format, buffers->packed.get(), buffers->x.get(),
+          buffers->dequantized.get(), buffers->n, buffers->k);
+      CheckResult check;
+      for (long long row = 0; row < buffers->n; ++row) {
+        check_value(check, buffers->y.get()[row],
+                    buffers->dequantized.get()[row],
+                    Tolerance{2e-3, 2e-4});
+      }
+      return check;
+    };
+    return body;
+  };
+  return decl;
+}
+
 }  // namespace
 
 void build_qgemv_formats_cases(const BuildCtx& ctx,
@@ -262,6 +371,14 @@ void build_qgemv_formats_cases(const BuildCtx& ctx,
   out.push_back(make_q4_weight_only(n, k));
   out.push_back(make_w8a8(QuantFormat::kQ4_0, n, k));
   out.push_back(make_w8a8(QuantFormat::kQ8_0, n, k));
+  const long long generic_n = ctx.preset == Preset::kSmoke ? 64 : 1024;
+  for (QuantFormat format : {
+           QuantFormat::kQ4_K, QuantFormat::kQ5_K, QuantFormat::kQ6_K,
+           QuantFormat::kIQ4_NL, QuantFormat::kIQ4_XS,
+           QuantFormat::kIQ2_XXS, QuantFormat::kIQ2_XS,
+           QuantFormat::kIQ3_XXS, QuantFormat::kIQ1_S}) {
+    out.push_back(make_gguf_weight_only(format, generic_n, k));
+  }
 }
 
 }  // namespace qcb

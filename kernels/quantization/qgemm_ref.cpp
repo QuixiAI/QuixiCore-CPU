@@ -1,9 +1,12 @@
 #include "quixicore_cpu/qgemm.h"
 
+#include <algorithm>
 #include <cmath>
-#include <vector>
+#include <cstdint>
+#include <limits>
 
 #include "kernels/common/validation.h"
+#include "src/memory/workspace_internal.h"
 
 namespace quixicore_cpu {
 
@@ -43,19 +46,32 @@ Status quantized_lm_head_argmax(QuantFormat format, const void* packed_weights,
   if (!detail::all_nonnull(packed_weights, hidden_states, token_ids)) {
     return Status::kInvalidArgument;
   }
-  std::vector<float> logits(static_cast<std::size_t>(vocab));
+  std::size_t packed_bytes = 0;
+  const Status packed_status =
+      qgemv_packed_size(format, vocab, hidden, &packed_bytes);
+  if (packed_status != Status::kOk) return packed_status;
+  const std::size_t row_bytes = packed_bytes / static_cast<std::size_t>(vocab);
+  constexpr long long kVocabularyTile = 4096;
+  detail::WorkspaceFrame workspace;
+  float* logits = workspace.allocate<float>(kVocabularyTile);
+  if (logits == nullptr) return Status::kOutOfMemory;
+  const auto* packed = static_cast<const std::uint8_t*>(packed_weights);
   for (long long row = 0; row < rows; ++row) {
-    const Status status =
-        qgemv(format, packed_weights, hidden_states + row * hidden,
-              logits.data(), vocab, hidden);
-    if (status != Status::kOk) {
-      return status;
-    }
     int best = 0;
-    for (long long token = 1; token < vocab; ++token) {
-      if (logits[static_cast<std::size_t>(token)] >
-          logits[static_cast<std::size_t>(best)]) {
-        best = static_cast<int>(token);
+    float best_logit = -std::numeric_limits<float>::infinity();
+    for (long long token_base = 0; token_base < vocab;
+         token_base += kVocabularyTile) {
+      const long long tile =
+          std::min(kVocabularyTile, vocab - token_base);
+      const Status status = qgemv(
+          format, packed + static_cast<std::size_t>(token_base) * row_bytes,
+          hidden_states + row * hidden, logits, tile, hidden);
+      if (status != Status::kOk) return status;
+      for (long long local = 0; local < tile; ++local) {
+        if (logits[local] > best_logit) {
+          best_logit = logits[local];
+          best = static_cast<int>(token_base + local);
+        }
       }
     }
     token_ids[row] = best;

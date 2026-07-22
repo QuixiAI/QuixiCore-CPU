@@ -57,6 +57,8 @@ add_library(quixicore_cpu STATIC
   kernels/quantization/qgemv_fused_ref.cpp
   kernels/quantization/qgemv_rows_ref.cpp
   kernels/quantization/gguf_ref.cpp
+  kernels/quantization/qgemv_gguf_blocked.cpp
+  kernels/quantization/qgemv_gguf_neon.cpp
   kernels/quantization/quantization_ref.cpp
   kernels/quantization/microscale_ref.cpp
   kernels/quantization/turboquant_ref.cpp
@@ -136,7 +138,8 @@ quixicore_cpu_add_isa_sources(quixicore_cpu ISA avx2
   SOURCES kernels/quantization/int8_gemm_avx2.cpp
           kernels/quantization/w8a32_gemm_avx2.cpp
           kernels/quantization/lowbit_w8a8_avx2.cpp
-          kernels/quantization/lowbit_avx2.cpp)
+          kernels/quantization/lowbit_avx2.cpp
+          kernels/quantization/qgemv_gguf_avx2.cpp)
 if(QUIXICORE_CPU_ISA_AVX2_SUPPORTED)
   target_compile_definitions(quixicore_cpu
     PRIVATE QUIXICORE_CPU_HAVE_INT8_GEMM_AVX2=1)
@@ -146,16 +149,21 @@ if(QUIXICORE_CPU_ISA_AVX2_SUPPORTED)
     PRIVATE QUIXICORE_CPU_HAVE_LOWBIT_W8A8_AVX2=1)
   target_compile_definitions(quixicore_cpu
     PRIVATE QUIXICORE_CPU_HAVE_LOWBIT_AVX2=1)
+  target_compile_definitions(quixicore_cpu
+    PRIVATE QUIXICORE_CPU_HAVE_GGUF_GEMV_AVX2=1)
 endif()
 
 quixicore_cpu_add_isa_sources(quixicore_cpu ISA avx512
   SOURCES kernels/quantization/lowbit_avx512.cpp
-          kernels/quantization/w8a32_gemm_avx512.cpp)
+          kernels/quantization/w8a32_gemm_avx512.cpp
+          kernels/quantization/qgemv_gguf_avx512.cpp)
 if(QUIXICORE_CPU_ISA_AVX512_SUPPORTED)
   target_compile_definitions(quixicore_cpu
     PRIVATE QUIXICORE_CPU_HAVE_LOWBIT_AVX512=1)
   target_compile_definitions(quixicore_cpu
     PRIVATE QUIXICORE_CPU_HAVE_W8A32_AVX512=1)
+  target_compile_definitions(quixicore_cpu
+    PRIVATE QUIXICORE_CPU_HAVE_GGUF_GEMV_AVX512=1)
 endif()
 
 quixicore_cpu_add_isa_sources(quixicore_cpu ISA avx512_vnni
@@ -213,6 +221,9 @@ if(QUIXICORE_CPU_BUILD_TESTS)
   add_executable(test_gguf_formats tests/correctness/test_gguf_formats.cpp)
   target_link_libraries(test_gguf_formats PRIVATE QuixiCoreCPU::quixicore_cpu)
   add_test(NAME gguf_formats COMMAND test_gguf_formats)
+  add_test(NAME gguf_formats_forced_ref COMMAND test_gguf_formats)
+  set_tests_properties(gguf_formats_forced_ref PROPERTIES
+    ENVIRONMENT "QUIXICORE_CPU_GGUF_GEMV_VARIANT=ref")
 
   add_executable(test_quantization tests/correctness/test_quantization.cpp)
   target_link_libraries(test_quantization PRIVATE QuixiCoreCPU::quixicore_cpu)

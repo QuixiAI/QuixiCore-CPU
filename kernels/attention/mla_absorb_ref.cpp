@@ -106,7 +106,6 @@ Status mla_absorb_impl(
   threading::parallel_ranges(batch * heads, 1,
                              [&](long long begin, long long end, int) {
     thread_local std::vector<float> query_latent;
-    thread_local std::vector<double> scores;
     thread_local std::vector<float> mixed_latent;
     query_latent.resize(static_cast<std::size_t>(latent_dim));
     mixed_latent.resize(static_cast<std::size_t>(latent_dim));
@@ -115,7 +114,6 @@ Status mla_absorb_impl(
       const long long head = item % heads;
       const int count = Sparse ? topk_lengths[request]
                                : lengths_or_indices[request];
-      scores.resize(static_cast<std::size_t>(count));
       std::fill(query_latent.begin(), query_latent.end(), 0.0f);
       const float* query = q + item * query_dim;
       const long long row_base = head * (nope_dim + value_dim);
@@ -128,6 +126,8 @@ Status mla_absorb_impl(
       }
 
       double maximum = -std::numeric_limits<double>::infinity();
+      double denominator = 0.0;
+      std::fill(mixed_latent.begin(), mixed_latent.end(), 0.0f);
       for (int selected = 0; selected < count; ++selected) {
         const int position =
             Sparse ? lengths_or_indices[request * max_topk + selected]
@@ -148,30 +148,27 @@ Status mla_absorb_impl(
           }
         }
         score *= score_scale;
-        scores[static_cast<std::size_t>(selected)] = score;
-        maximum = std::max(maximum, score);
-      }
-      double denominator = 0.0;
-      for (double& score : scores) {
-        score = std::exp(score - maximum);
-        denominator += score;
-      }
-      std::fill(mixed_latent.begin(), mixed_latent.end(), 0.0f);
-      for (int selected = 0; selected < count; ++selected) {
-        const int position =
-            Sparse ? lengths_or_indices[request * max_topk + selected]
-                   : selected;
-        const int block =
-            block_table[request * max_blocks + position / page_size];
-        const long long cache_row =
-            static_cast<long long>(block) * page_size + position % page_size;
-        const float* latent = latent_cache + cache_row * latent_dim;
-        const float probability = static_cast<float>(
-            scores[static_cast<std::size_t>(selected)] / denominator);
-        for (long long dim = 0; dim < latent_dim; ++dim) {
-          mixed_latent[static_cast<std::size_t>(dim)] +=
-              probability * latent[dim];
+        if (score > maximum) {
+          const double old_weight = std::exp(maximum - score);
+          denominator = denominator * old_weight + 1.0;
+          for (long long dim = 0; dim < latent_dim; ++dim) {
+            mixed_latent[static_cast<std::size_t>(dim)] = static_cast<float>(
+                mixed_latent[static_cast<std::size_t>(dim)] * old_weight +
+                latent[dim]);
+          }
+          maximum = score;
+        } else {
+          const double weight = std::exp(score - maximum);
+          denominator += weight;
+          for (long long dim = 0; dim < latent_dim; ++dim) {
+            mixed_latent[static_cast<std::size_t>(dim)] +=
+                static_cast<float>(latent[dim] * weight);
+          }
         }
+      }
+      if (denominator > 0.0) {
+        const float inverse = static_cast<float>(1.0 / denominator);
+        for (float& value : mixed_latent) value *= inverse;
       }
       float* destination = out + item * value_dim;
       for (long long value = 0; value < value_dim; ++value) {

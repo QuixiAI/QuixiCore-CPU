@@ -106,6 +106,15 @@ Status qgemv_qkv(QuantFormat format, const void* packed_q,
                  const void* packed_k, const void* packed_v, const float* x,
                  float* q, float* k_out, float* v_out, long long query_dim,
                  long long kv_dim, long long input_dim);
+// Single-token decode projection with split-half RoPE on Q/K and direct KV
+// cache insertion. Caches are flattened [slots,kv_heads,head_dim].
+Status qgemv_qkv_rope_kv(
+    QuantFormat format, const void* packed_q, const void* packed_k,
+    const void* packed_v, const float* x, const float* cosine,
+    const float* sine, float* q, float* key_cache, float* value_cache,
+    long long query_heads, long long kv_heads, long long head_dim,
+    long long input_dim, long long slots, long long max_position, int position,
+    int slot);
 
 // Name of the variant qgemv resolves to for this format ("ref", "neon", ...).
 const char* qgemv_variant(QuantFormat format);

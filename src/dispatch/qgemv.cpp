@@ -27,6 +27,31 @@ struct Q8_0Variant {
   bool (*supported)(const CpuFeatures&);
 };
 
+struct GgufVariant {
+  const char* name;
+  quant::GgufGemvFn fn;
+  bool (*supported)(const CpuFeatures&);
+};
+
+constexpr GgufVariant kGgufVariants[] = {
+    {"ref", &quant::gguf_gemv_ref,
+     [](const CpuFeatures&) { return true; }},
+    {"blocked_ref", &quant::gguf_gemv_blocked_ref,
+     [](const CpuFeatures&) { return true; }},
+#if defined(__aarch64__) || defined(_M_ARM64)
+    {"neon", &quant::gguf_gemv_neon,
+     [](const CpuFeatures& features) { return features.neon; }},
+#endif
+#if defined(QUIXICORE_CPU_HAVE_GGUF_GEMV_AVX2)
+    {"avx2", &quant::gguf_gemv_avx2,
+     [](const CpuFeatures& features) { return features.avx2; }},
+#endif
+#if defined(QUIXICORE_CPU_HAVE_GGUF_GEMV_AVX512)
+    {"avx512", &quant::gguf_gemv_avx512,
+     [](const CpuFeatures& features) { return features.avx512f; }},
+#endif
+};
+
 constexpr Q8_0Variant kQ8_0Variants[] = {
     {"ref", &quant::q8_0_gemv_ref, [](const CpuFeatures&) { return true; }},
 #if defined(__aarch64__) || defined(_M_ARM64)
@@ -52,6 +77,27 @@ const Q8_0Variant& resolve_q8_0() {
       if (variant.supported(features)) {
         best = &variant;
       }
+    }
+    return *best;
+  }();
+  return chosen;
+}
+
+const GgufVariant& resolve_gguf() {
+  static const GgufVariant& chosen = []() -> const GgufVariant& {
+    const CpuFeatures& features = cpu_features();
+    const char* forced = std::getenv("QUIXICORE_CPU_GGUF_GEMV_VARIANT");
+    if (forced != nullptr) {
+      for (const auto& variant : kGgufVariants) {
+        if (std::strcmp(variant.name, forced) == 0 &&
+            variant.supported(features)) {
+          return variant;
+        }
+      }
+    }
+    const GgufVariant* best = &kGgufVariants[0];
+    for (const auto& variant : kGgufVariants) {
+      if (variant.supported(features)) best = &variant;
     }
     return *best;
   }();
@@ -196,11 +242,8 @@ Status qgemv(QuantFormat format, const void* packed, const float* x, float* y,
   if (format == QuantFormat::kQ8_0) {
     resolve_q8_0().fn(static_cast<const quant::BlockQ8_0*>(packed), x, y, n,
                       k);
-  } else if (format == QuantFormat::kQ4_0) {
-    quant::q4_0_gemv_ref(static_cast<const quant::BlockQ4_0*>(packed), x, y,
-                         n, k);
   } else {
-    quant::gguf_gemv_ref(format, packed, x, y, n, k);
+    resolve_gguf().fn(format, packed, x, y, n, k);
   }
   return Status::kOk;
 }
@@ -209,13 +252,10 @@ const char* qgemv_variant(QuantFormat format) {
   if (format == QuantFormat::kQ8_0) {
     return resolve_q8_0().name;
   }
-  if (format == QuantFormat::kQ4_0) {
-    return "ref";
-  }
   long long ignored_size = 0;
   std::size_t ignored_bytes = 0;
   return quant::gguf_format_info(format, &ignored_size, &ignored_bytes)
-             ? "ref"
+             ? resolve_gguf().name
              : "unsupported";
 }
 

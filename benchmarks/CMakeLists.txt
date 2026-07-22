@@ -14,6 +14,7 @@ add_executable(quixicore_cpu_bench
   cases/contract_ops.cpp
   cases/colibri_ops.cpp
   cases/mem_triad.cpp
+  cases/optimization_plan.cpp
   cases/ported_ops.cpp
   cases/prerequisites.cpp
   cases/qgemv.cpp

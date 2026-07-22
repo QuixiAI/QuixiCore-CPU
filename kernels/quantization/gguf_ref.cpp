@@ -365,6 +365,15 @@ float gguf_dequant_element(QuantFormat format, const std::uint8_t* block,
   return dequant(format, block, column);
 }
 
+void gguf_dequant_block_ref(QuantFormat format, const std::uint8_t* block,
+                            float* values) {
+  long long block_size = 0;
+  (void)gguf_format_info(format, &block_size, nullptr);
+  for (int column = 0; column < block_size; ++column) {
+    values[column] = dequant(format, block, column);
+  }
+}
+
 bool gguf_format_info(QuantFormat format, long long* block_size,
                       std::size_t* block_bytes) {
   long long size = 0;

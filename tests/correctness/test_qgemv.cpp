@@ -192,8 +192,8 @@ int main() {
                   accumulated[static_cast<std::size_t>(input)] -
                   (0.25f - 0.5f * dequantized[7 * k + input])) < 1e-6f);
     }
-    REQUIRE(std::string(quixicore_cpu::qgemv_variant(QuantFormat::kQ4_0)) ==
-            "ref");
+    REQUIRE(std::string(quixicore_cpu::qgemv_variant(QuantFormat::kQ4_0)) !=
+            "unsupported");
   }
 
   // A scale below the minimum normal fp16 value is still a valid fp16

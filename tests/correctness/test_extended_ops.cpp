@@ -329,6 +329,63 @@ int main() {
     REQUIRE(fft_convolution(signal, convolution_kernel, convolved, 1, 1, 4) ==
             Status::kOk);
     REQUIRE(std::equal(signal, signal + 4, convolved));
+
+    constexpr long long fft_length = 64;
+    std::vector<float> fft_signal(fft_length), fft_kernel(fft_length);
+    std::vector<float> fft_out(fft_length);
+    for (long long i = 0; i < fft_length; ++i) {
+      fft_signal[i] = static_cast<float>((i * 7) % 19 - 9) / 11.0f;
+      fft_kernel[i] = static_cast<float>((i * 5) % 13 - 6) / 17.0f;
+    }
+    REQUIRE(fft_convolution(fft_signal.data(), fft_kernel.data(),
+                            fft_out.data(), 1, 1, fft_length) == Status::kOk);
+    for (long long target = 0; target < fft_length; ++target) {
+      double expected = 0.0;
+      for (long long source = 0; source < fft_length; ++source) {
+        const long long index =
+            (target - source + fft_length) % fft_length;
+        expected += static_cast<double>(fft_signal[source]) * fft_kernel[index];
+      }
+      REQUIRE(close(fft_out[target], expected, 2e-4, 2e-4));
+    }
+
+    constexpr long long scan_length = 5;
+    constexpr long long scan_dim = 3;
+    std::vector<float> scan_c(scan_length * scan_dim);
+    std::vector<float> scan_b(scan_length * scan_dim);
+    std::vector<float> scan_x(scan_length * scan_dim);
+    std::vector<float> scan_decay(scan_length);
+    std::vector<float> scan_out(scan_length * scan_dim);
+    for (long long i = 0; i < scan_length * scan_dim; ++i) {
+      scan_c[i] = static_cast<float>((i * 3) % 11 - 5) / 9.0f;
+      scan_b[i] = static_cast<float>((i * 5) % 13 - 6) / 8.0f;
+      scan_x[i] = static_cast<float>((i * 7) % 17 - 8) / 10.0f;
+    }
+    for (long long i = 0; i < scan_length; ++i) {
+      scan_decay[i] = -0.2f * static_cast<float>(i);
+    }
+    REQUIRE(mamba2(scan_c.data(), scan_b.data(), scan_x.data(),
+                   scan_decay.data(), scan_out.data(), 1, 1, scan_length,
+                   scan_dim) == Status::kOk);
+    for (long long target = 0; target < scan_length; ++target) {
+      for (long long value = 0; value < scan_dim; ++value) {
+        double expected = 0.0;
+        for (long long source = 0; source <= target; ++source) {
+          double similarity = 0.0;
+          for (long long key = 0; key < scan_dim; ++key) {
+            similarity +=
+                static_cast<double>(scan_c[target * scan_dim + key]) *
+                scan_b[source * scan_dim + key];
+          }
+          expected += similarity *
+                      std::exp(static_cast<double>(scan_decay[target] -
+                                                   scan_decay[source])) *
+                      scan_x[source * scan_dim + value];
+        }
+        REQUIRE(close(scan_out[target * scan_dim + value], expected,
+                      2e-5, 3e-4));
+      }
+    }
   }
 
   // Extended matmul and complete portable MoE dataflow.
