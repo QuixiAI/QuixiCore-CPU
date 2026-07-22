@@ -1,61 +1,86 @@
 # Sibling Kernel Port Matrix
 
-This matrix records the semantic CPU ports derived from the union of
-QuixiCore-Metal, QuixiCore-XPU, QuixiCore-CUDA, and QuixiCore-ROCm, reconciled
-against the umbrella QuixiCore v0.1 registry. GPU launch strategies, tile
-variants, and backend-specific fusions are not separate CPU APIs: one portable
-operation implements the shared behavior.
+Inventory date: 2026-07-22. The source inventory is the union of the
+top-level model, training, serving, quantization, and distributed operations
+under `QuixiCore-Metal`, `QuixiCore-XPU`, `QuixiCore-CUDA`, and
+`QuixiCore-ROCm`, reconciled with the umbrella registries and matrices.
 
-`Implemented` below means a public CPU entry point, deterministic correctness
-coverage, and a successful Release/sanitizer/x86_64 test matrix. `Benchmarked`
-also has a focused Release run. Neither label expands the stated dtype or
-quant-format scope.
+The CPU port is semantic. A GPU repository may expose separate symbols for a
+tile size, architecture, pipeline stage, cache layout, partition, or reduction.
+Those symbols collapse to one CPU operation when their host-observable result
+is the same. Backend programming primitives, tests, demos, educational GEMM
+stages, and hardware instructions are not model kernels and are outside this
+inventory. The result is a portable f32 reference surface, not a claim of
+fp16/bf16 ABI support or an optimized performance tier.
 
-## Active umbrella families
+At this inventory point every distinct top-level sibling operation semantic is
+represented by a public CPU entry point or by an explicitly documented
+composition below. Correctness tests cover the public candidates. Benchmark
+coverage remains deliberately narrower and is indexed in `perf/`.
 
-| Umbrella family | CPU operation(s) | Scope | Evidence state |
-|---|---|---|---|
-| `norms` | `rms_norm`, `layer_norm` | f32 | Implemented; RMSNorm benchmarked |
-| `softmax` | `softmax` | f32 | Benchmarked |
-| `activations` | `gelu`, `gelu_backward`, `silu`, `glu` | f32; erf/tanh GELU and SwiGLU/GeGLU/ReGLU/GLU | Implemented |
-| `causal_attention` | `attention`, `rope` | f32; MHA/GQA, causal or non-causal, NeoX RoPE | Attention benchmarked |
-| `paged_attention` | `paged_attention` | f32; paged KV cache, optional sliding window | Implemented |
-| `mla_decode` | `mla_decode` | f32 latent-cache decode | Implemented |
-| `quant_gemv` | `qgemv`, `qgemv_w8a8` | f32 activation with GGUF q8_0/q4_0 weights; optional blockwise int8 activation | Benchmarked |
-| `quant_gemm` | `qgemm` | f32 activation, GGUF q8_0 weights | Benchmarked |
-| `quantized_lm_head` | `quantized_lm_head_argmax` | f32 activation, GGUF q8_0 weights | Implemented |
-| `sampling` | `argmax_sample`, `sample_categorical`, `top_k_sample`, `top_p_sample`, `min_p_sample` | f32 logits | Implemented |
-| `beam_search` | `beam_search_step` | f32 logits and cumulative scores | Implemented |
-| `speculative_decode` | `speculative_verify` | linear draft verification | Implemented |
-| `mamba_ssd` | `selective_scan` | f32 Mamba S6 recurrence | Benchmarked |
-| `moe_routing` | `moe_route_topk` | f32, stable expert-id tie break | Benchmarked |
-| `grouped_moe_gemm` | `grouped_gemm` | f32 grouped dense GEMM | Implemented |
-| `optimizers` | `adamw` | f32 fused in-place AdamW | Implemented |
+## Operation mapping
 
-Correctness lives in `tests/correctness/test_ops.cpp`,
-`tests/correctness/test_qgemv.cpp`, and
-`tests/correctness/test_rms_norm.cpp`. Focused measurements and exact commands
-are recorded in `perf/optimization_status.md`; raw output is under
-`perf/results/2026-07-22/all-kernels-final-{t1,t6}/`.
+| Sibling area | CPU semantic surface | Notes |
+|---|---|---|
+| Activations and elementwise | `gelu`, `gelu_backward`, `silu`, `glu`, `glu_backward`, `add`, `softmax` | Erf/tanh GELU and SwiGLU/GeGLU/ReGLU/plain GLU modes are explicit. GPU elementwise launch variants collapse by operation. |
+| Norms and norm-quant | `rms_norm`, `layer_norm`, both backward paths, add/residual seams, residual-next, int8/FP8 norm-add quantization | Metal split/fused backward symbols produce one combined CPU result. AddNorm FP8 token/group variants use the generic group-size API. |
+| Dense matmul and projections | `dense_gemm`, `dense_gemm_ex`, `linear_epilogue`, `decode_swiglu`, `gemm_gate_residual`, `complex_gemm`, `grouped_gemm` | CUDA/ROCm architecture, transpose, tile, staged, Flux, and educational variants collapse to these mathematical operations and epilogues. |
+| Quantized matmul | `qgemv`, W8A8 GEMV, fused up/gate/QKV GEMV, `qgemm`, backward-input, epilogues, int8/AZP, BitNet W2A8, FP8 scaled/block-scale, act-order, and quantized LM-head operations | Packed weight decode is shared across GEMV/GEMM/MoE/embedding. `qgemv_unpack` represents full-weight dequantization. |
+| Dense and variable attention | dense/GQA attention forward/backward, window and biased attention, varlen attention, Q/K norm+RoPE, table RoPE | Causal/noncausal, MHA/GQA, Swin, multiwarp, and GPU head-dimension variants share these entries. Prep/DQ/DKV and worklist/pack/regather stages are combined public results or exposed metadata helpers. |
+| Decode attention and caches | paged, advanced, staged-equivalent, xcache-layout, FP8 paged, f32/FP8-prefix cascade, dense/sparse FP8 MLA, quantized dense attention, RoPE+KV insert | Partition/reduce and direct/staged routes are CPU scheduling details. `paged_attention_xcache` adapts the sibling split/transposed cache layout. |
+| Sampling and logit processing | argmax/categorical/top-k/top-p/min-p/typical-p; token/bad-word/repetition processors; top-k/top-p renorm; quadratic, nsigma, top-a, epsilon, eta, XTC, skew, no-repeat-ngram, and DRY transforms | Partial/reduction symbols in the LM-head and sampler implementations collapse into final selection APIs. |
+| Beam and speculative decode | beam step/remap/copy metadata; linear/tree/ragged rejection verification; recovered-token sampling; compact/KV metadata; EAGLE metadata | Padded and ragged host-observable results are explicit. Tree-building and EAGLE launch stages remain separate where callers consume their metadata. |
+| Embedding and multimodal serving | lookup/backward, multimodal source-map build/merge, pooled RMS-L2, quantized embedding and embedding-bag | Atomic and sorted embedding-backward variants share the deterministic CPU accumulation. |
+| MoE | top-k/grouped routing, permute/padded schedule, gather/finalize and backward, grouped GEMM/SwiGLU and backward, quantized grouped GEMM/SwiGLU | Rectangular, padded, quantized, and fused GPU launch variants map to shape parameters and epilogue flags. Distributed MoE dispatch is `all_to_all` plus the same grouped operation. |
+| Linear attention | normalized/unnormalized, causal, decayed, Based, Hedgehog, and GatedDeltaNet recurrence | CUDA/ROCm chunk KV/scan/output phases are combined in the final recurrence/attention API. |
+| State-space and convolution | selective scan, stateful varlen/APC scan, Mamba2 forward/backward, SSD decode, direct circular `fft_convolution` | SSD chunk phases and row/column backward launches collapse into full results. The direct convolution is the portable correctness oracle for FFT implementations. |
+| Training and utility kernels | cross entropy forward/backward, dense/top-k KD-KL and fused KD+CE, dropout, Hadamard, packbits/segment-packbits/permute/tau-tail, masked AdamW | Layout/bit utilities grouped by Metal's `Marginal` primitive are explicit CPU functions. |
+| Vision and sparse serving | patch-merge LayerNorm, space-to-depth norm+linear, edge MLP, indexer quant/gather, MInference block mask | Swin attention itself maps to biased attention. |
+| Collectives and parallel composites | all-reduce, all-gather, reduce-scatter, all-to-all, broadcast, reduce, GEMM+AR, AG+GEMM, GEMM+RS | Host-reference buffers make every rank explicit. Ring/Ulysses attention and MoE dispatch are compositions of these collectives with attention or grouped MoE; network transport and overlap strategy are not CPU kernel semantics. |
 
-## Sibling-only shared utilities
+## Quantization formats
 
-The sibling inventory also exposed reusable operations outside the 16 active
-umbrella family keys. Their portable f32 CPU candidates are:
+The public format enum and decoder cover the packed formats found across the
+sibling quantization trees:
 
-- dense row-major GEMM and non-causal linear attention;
-- embedding lookup and KV-cache scatter/gather;
-- deterministic dropout, cross entropy, and Hadamard transform.
+- GGUF: q4_0, q4_1, q5_0, q5_1, q8_0, q2_K through q6_K, IQ4_NL, IQ4_XS,
+  IQ2_XXS, IQ2_XS, IQ3_XXS, and IQ1_S.
+- Integer/custom: U4B8, U4, HQQ, BitNet ternary, and TQ2_0.
+- Floating/microscaled: E4M3/E5M2 FP8, block/raw FP8, E2M1 FP4, MXFP8,
+  NVFP4, MXFP4, and both MXFP6 encodings.
+- Runtime quantization: symmetric/asymmetric int8, signed grouped int4,
+  per-row/per-group FP8 with optional power-of-two scales, fake quantization,
+  fused SiLU/gate quantization, ternary statistics, and TurboQuant KV coding.
 
-These are CPU extensions until the umbrella registry assigns them contract
-entries.
+`qgemv_pack` deliberately authors only q8_0, q4_0, and TQ2_0. The other
+entries consume sibling/GGUF packed bytes and have exact decoder coverage;
+this distinction avoids claiming a packer that the sibling contract does not
+provide.
 
-## Deliberate non-claims
+## Semantic collapses
 
-This batch does not claim fp16, bf16, FP8, FP4/MX, ternary, or GGUF formats
-other than q8_0 and q4_0. It also does not claim GPU-specific tile variants,
-tensor-core/MFMA/AMX implementations, distributed collectives, vision kernels,
-attention/norm backward passes, FFT convolution, quantized MoE fusions, or the
-many repo-local composite epilogues. Those require explicit shared semantics,
-CPU-appropriate APIs, correctness fixtures, and focused benchmark evidence
-before they can be advertised.
+| Sibling implementation symbols | CPU representation |
+|---|---|
+| `AttnBwdPrep`, `AttnBwdDQ`, `AttnBwdDKV` | one `attention_backward` result |
+| paged/MLA partition and reduction stages | one paged/MLA decode call |
+| LM-head partial/top-k/top-p/argcat reducers | final LM-head candidate, sample, beam, or constrained call |
+| linear-attention and SSD chunk KV/scan/output phases | final attention/recurrence call |
+| architecture/tile/direct/staged GEMM variants | one dense or quantized GEMM semantic plus explicit epilogue |
+| CUDA/ROCm ring or Ulysses attention | collective composition plus `attention` |
+| CUDA/ROCm distributed MoE dispatch | `all_to_all` plus MoE gather/grouped GEMM/finalize |
+| Metal atomic versus sorted embedding backward | deterministic `embedding_backward` |
+
+## Evidence
+
+Correctness is split across the focused executables under
+`tests/correctness/`: the core contract tests plus `extended_ops`,
+`gguf_formats`, `quantization`, `projection_ops`, `parallel_sampling`,
+`serving_metadata`, and `remaining_ops`. These cover known-value or
+independently decomposed oracles, invalid arguments, quantized byte layouts,
+and the semantic collapses above.
+
+`contract_ops` records representative performance evidence for softmax,
+attention, MoE routing, selective scan, and q8_0 QGEMM. `ported_ops` records a
+focused fused norm-add/int8-quant run against a decomposed baseline. Exact
+commands, hardware, medians, variance, and decisions live in
+`perf/optimization_status.md`; this matrix makes no family-wide speed claim.

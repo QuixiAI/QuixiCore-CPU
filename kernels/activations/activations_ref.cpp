@@ -118,4 +118,49 @@ Status glu(const float* x, float* y, long long rows, long long dim,
   return Status::kOk;
 }
 
+Status glu_backward(const float* grad_out, const float* x, float* grad_in,
+                    long long rows, long long dim, GluMode mode) {
+  if (!detail::valid_product({rows, dim, 2})) {
+    return Status::kInvalidShape;
+  }
+  if (!detail::all_nonnull(grad_out, x, grad_in)) {
+    return Status::kInvalidArgument;
+  }
+  for (long long row = 0; row < rows; ++row) {
+    const float* gate = x + row * 2 * dim;
+    const float* value = gate + dim;
+    float* grad_gate = grad_in + row * 2 * dim;
+    float* grad_value = grad_gate + dim;
+    for (long long item = 0; item < dim; ++item) {
+      float activated = 0.0f, derivative = 0.0f;
+      switch (mode) {
+        case GluMode::kSwiGlu: {
+          const float probability = sigmoid(gate[item]);
+          activated = gate[item] * probability;
+          derivative = probability + gate[item] * probability *
+                                         (1.0f - probability);
+          break;
+        }
+        case GluMode::kGeGlu:
+          activated = gelu_value(gate[item], GeluApprox::kErf);
+          derivative = gelu_derivative(gate[item], GeluApprox::kErf);
+          break;
+        case GluMode::kReGlu:
+          activated = gate[item] > 0.0f ? gate[item] : 0.0f;
+          derivative = gate[item] > 0.0f ? 1.0f : 0.0f;
+          break;
+        case GluMode::kGlu: {
+          activated = sigmoid(gate[item]);
+          derivative = activated * (1.0f - activated);
+          break;
+        }
+      }
+      const float gradient = grad_out[row * dim + item];
+      grad_gate[item] = gradient * value[item] * derivative;
+      grad_value[item] = gradient * activated;
+    }
+  }
+  return Status::kOk;
+}
+
 }  // namespace quixicore_cpu

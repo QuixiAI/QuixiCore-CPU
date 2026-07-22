@@ -10,6 +10,35 @@ enum class QuantFormat {
   kQ8_0,  // GGUF q8_0: 32-element blocks, fp16 scale + 32 int8 values
   kQ4_0,  // GGUF q4_0: 32-element blocks, fp16 scale + 16 packed nibbles
           // (-8 offset)
+  kQ4_1,
+  kQ5_0,
+  kQ5_1,
+  kU4B8,
+  kU4,
+  kHQQ,
+  kFP8E4M3,
+  kFP8E5M2,
+  kFP8Block,
+  kFP8Raw,
+  kFP4E2M1,
+  kMXFP8,
+  kNVFP4,
+  kMXFP4,
+  kMXFP6E3M2,
+  kMXFP6E2M3,
+  kBitnet,
+  kQ2_K,
+  kQ3_K,
+  kQ4_K,
+  kQ5_K,
+  kQ6_K,
+  kIQ4_NL,
+  kIQ4_XS,
+  kIQ2_XXS,
+  kIQ2_XS,
+  kIQ3_XXS,
+  kIQ1_S,
+  kTQ2_0,
 };
 
 // Quantized GEMV, QuixiCore family contract: out = dequantize(wq) @ x with
@@ -23,7 +52,9 @@ enum class QuantFormat {
 Status qgemv_packed_size(QuantFormat format, long long n, long long k,
                          size_t* size);
 
-// Quantize row-major f32 weights (n x k) into the packed format.
+// Quantize row-major f32 weights (n x k) into the packed format. Packing is
+// currently defined for q8_0/q4_0/tq2_0; the other formats are decode-compatible
+// with GGUF inputs and return kUnsupportedFormat from this entry point.
 Status qgemv_pack(QuantFormat format, const float* weights, long long n,
                   long long k, void* packed);
 
@@ -38,6 +69,19 @@ Status qgemv_unpack(QuantFormat format, const void* packed, long long n,
 // activation-quantizing experiments are deliberately not selectable here.
 Status qgemv(QuantFormat format, const void* packed, const float* x, float* y,
              long long n, long long k);
+
+// Fused projection compositions matching the Metal decode seams.
+Status qgemv_up_gate(QuantFormat format, const void* packed_up,
+                     const void* packed_gate, const float* x, float* up,
+                     float* gate, long long n, long long k);
+Status qgemv_up_gate_activation(QuantFormat format, const void* packed_up,
+                                const void* packed_gate, const float* x,
+                                float* out, long long n, long long k,
+                                bool gelu_tanh = true);
+Status qgemv_qkv(QuantFormat format, const void* packed_q,
+                 const void* packed_k, const void* packed_v, const float* x,
+                 float* q, float* k_out, float* v_out, long long query_dim,
+                 long long kv_dim, long long input_dim);
 
 // Name of the variant qgemv resolves to for this format ("ref", "neon", ...).
 const char* qgemv_variant(QuantFormat format);

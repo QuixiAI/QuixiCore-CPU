@@ -13,6 +13,7 @@ add_executable(quixicore_cpu_bench
   harness/timing.cpp
   cases/contract_ops.cpp
   cases/mem_triad.cpp
+  cases/ported_ops.cpp
   cases/qgemv.cpp
   cases/qgemv_formats.cpp
   cases/rms_norm.cpp

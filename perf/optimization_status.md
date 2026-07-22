@@ -23,6 +23,7 @@ performance claim must add a focused optimization entry here.
 
 | Date | Kernel | Dtype / Format | Shape Set | Target | Baseline | Candidate | Decision | Evidence |
 |---|---|---|---|---|---:|---:|---|---|
+| 2026-07-22 | fused RMSNorm-add + dynamic quantization | f32 / group int8 | R512 H4096 G128 | portable fused reference, 1/6 threads | 3.2327 / 1.2658 ms | 3.2725 / 1.2906 ms | keep semantic fusion; 1.2-2.0% allocation cost, no speedup claim | `perf/results/2026-07-22/ported-ops-final-{t1,t6}/` |
 | 2026-07-22 | q4_0 qgemv + q4_0/q8_0 qgemv_w8a8 | q4_0/q8_0, f32/int8 activation | quant_matmul m=1 N4096 K4096 | portable refs + aarch64 DotProd, 6 threads | q8 W8A8 ref 0.7394 ms | q8 W8A8 DotProd 0.1386 ms | keep public routes; q4 references are correctness anchors, q8 DotProd is 5.33x | `perf/results/2026-07-22/qgemv-formats-final-t6-fixed/` |
 | 2026-07-22 | sibling semantic port batch | f32 / q8_0 | five representative quick shapes | aarch64 portable + existing NEON q8_0 route, 1/6 threads | scalar/decomposed 0.8276-31.7397 ms | 0.1520-3.8159 ms | keep portable candidates and parallel routes; no new ISA or family-wide support claim | `perf/results/2026-07-22/all-kernels-final-{t1,t6}/` |
 | 2026-07-21 | qgemv + rms_norm correctness hardening | q8_0 / f32 | quant_matmul m=1 + decode_small + R512 stress | aarch64 NEON | qgemv 0.990 ms; RMS R512 0.259 ms | qgemv 0.969 ms; RMS R512 0.260 ms | keep; contract fixes with no material hot-path regression | `perf/results/2026-07-21/review-{baseline,candidate-final,rms-baseline-repeat,rms-candidate-repeat}/` |
@@ -31,6 +32,51 @@ performance claim must add a focused optimization entry here.
 | 2026-07-07 | rms_norm | f32 | decode_small (R1-R4, H2048/H4096) + R512 stress | aarch64 NEON | 2.26 us | 0.52 us | keep neon variant (4.3-4.6x over ref) | `perf/results/2026-07-07/024347-quick/` |
 | 2026-07-07 | quant_gemv | q8_0 | quant_matmul m=1 (4096x4096, 8192x8192, 16384x4096) | aarch64 NEON DotProd | 4.314 ms | 0.301 ms | keep dotprod variant (14.4x, 51% of DRAM roofline) | `perf/results/2026-07-07/023619-quick/` |
 | 2026-07-07 | quant_gemv | q8_0 | quant_matmul m=1 (4096x4096, 8192x8192, 16384x4096) | aarch64 baseline flags | 4.319 ms | 4.441 ms | reject multi-acc candidate; keep plain loop as ref | `perf/results/2026-07-07/022305-quick/` |
+
+## 2026-07-22: extended sibling semantic port completion
+
+Status: candidate.
+
+Current implementation: the final sibling inventory adds portable reference
+semantics for the extended norm/attention/quantization/serving/MoE/SSM/vision
+paths and host-reference collectives. The focused measured path is fused
+RMSNorm-add followed by dynamic signed int8 group quantization. It uses the
+public `rms_norm_add_quant_int8` entry point and the R512 H4096 shape with
+128-value quantization groups.
+
+Correctness: the benchmark's fused result is checked against public
+`rms_norm_add` plus `quantize_int8` with preallocated intermediate storage.
+Codes, scales, and residual output agree exactly (`max_abs_err=0`). The full
+Release suite passes 18/18; ASan + UBSan + float-cast-overflow passes 18/18;
+the x86_64 cross-build and full Rosetta test run pass 18/18. Sanitizer
+initially caught two undersized test buffers; the corrected fixtures now
+encode the documented `[rows,groups]` scale and `[rows,intermediate]` output
+shapes and remain as regression coverage.
+
+Baseline: the decomposed operations with a persistent intermediate buffer.
+Candidate: the fused public operation, whose portable reference currently
+allocates its intermediate per call.
+
+| threads | candidate median ms (CV; p20-p80) | baseline median ms | candidate / baseline | decision |
+|---:|---:|---:|---:|---|
+| 1 | 3.272490 (0.0791; 3.250896-3.354709) | 3.232729 | 1.012x | keep semantic entry; allocation cost is inside variance |
+| 6 | 1.290578 (0.0239; 1.258834-1.316208) | 1.265828 | 1.020x | keep; 2.54x over the one-thread candidate, no fusion speedup claim |
+
+Decision: keep. The public composition supplies the sibling semantics with a
+small, measured allocation cost versus a caller-managed intermediate. No
+performance improvement or optimized tier is claimed; eliminating the
+temporary remains future tuning work.
+
+- Hardware: Apple M5 Max, 18 physical/logical cores (6 performance, 12
+  efficiency), 128 GB; aarch64 NEON.
+- OS/toolchain: macOS 26.5.2; Apple Clang 21.0.0
+  (`clang-2100.1.1.101`); CMake Release.
+- Settings: one or six threads, OS-default affinity/frequency, 5 warmups,
+  30 timed samples, 5 ms minimum sample time.
+- Command: `quixicore_cpu_bench --preset quick --kernel ported_ops --threads
+  {1,6} --warmup 5 --iters 30 --min-sample-ms 5`.
+- Working-tree label: `c47957e-dirty`.
+- Raw results: `perf/results/2026-07-22/ported-ops-final-{t1,t6}/`.
 
 ## 2026-07-22: sibling semantic port batch
 

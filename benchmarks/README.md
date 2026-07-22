@@ -98,6 +98,10 @@ failed oracle produces an `error` row and a nonzero process exit:
   scalar or decomposed baseline and a correctness gate; these are
   representative performance paths for the sibling-port batch, not an
   ISA-tuning claim.
+- `ported_ops` — fused RMSNorm-add plus dynamic group-int8 quantization,
+  checked against the same public operations composed with preallocated
+  intermediate storage. This records focused evidence for the extended port
+  batch without asserting an optimized performance tier.
 
 ## Adding A Kernel Case
 

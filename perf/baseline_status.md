@@ -17,9 +17,11 @@ backend coverage status.
 | `qgemv_formats` | Public q4_0 weight-only and q4_0/q8_0 W8A8 GEMV | Continued quant-format baselines | `scripts/bench --preset quick --kernel qgemv_formats` |
 | `rms_norm` | Public f32 RMSNorm plus scalar reference | Norm baseline | `scripts/bench --preset quick --kernel rms_norm` |
 | `contract_ops` | Softmax, causal attention, MoE routing, Mamba scan, q8_0 QGEMM | Representative sibling-port baselines | `scripts/bench --preset quick --kernel contract_ops` |
+| `ported_ops` | Fused RMSNorm-add plus dynamic group-int8 quantization | Extended sibling-port baseline | `scripts/bench --preset quick --kernel ported_ops` |
 
 | Date | Kernel | Dtype / Format | Shape Set | Target | Command | Median | Min / Max or Variance | Artifact | Notes |
 |---|---|---|---|---|---|---:|---|---|---|
+| 2026-07-22 | fused RMSNorm-add + quantization | f32 / group int8 | R512 H4096 G128 | Apple M5 Max, 1 / 6 threads | `quixicore_cpu_bench --preset quick --kernel ported_ops --threads {1,6} --warmup 5 --iters 30 --min-sample-ms 5` | 3.272490 / 1.290578 ms | CV 0.0791 / 0.0239 | `perf/results/2026-07-22/ported-ops-final-{t1,t6}/` | decomposed preallocated baseline 3.232729 / 1.265828 ms; candidate, no speedup claim |
 | 2026-07-22 | qgemv (`ref`) | q4_0 / f32 activation | quant_matmul m=1 N4096 K4096 | Apple M5 Max, 6 threads | `quixicore_cpu_bench --preset quick --kernel qgemv_formats --threads 6 --warmup 5 --iters 30 --min-sample-ms 5` | 1.048475 ms | CV 0.0358 | `perf/results/2026-07-22/qgemv-formats-final-t6-fixed/` | 9.0 W-GB/s; portable candidate, no ISA speedup claim |
 | 2026-07-22 | qgemv_w8a8 (`ref`) | q4_0 / blockwise int8 activation | quant_matmul m=1 N4096 K4096 | Apple M5 Max, 6 threads | same | 0.858071 ms | CV 0.0200 | same | 11.0 W-GB/s; portable candidate, no ISA speedup claim |
 | 2026-07-22 | qgemv_w8a8 (`dotprod`) | q8_0 / blockwise int8 activation | quant_matmul m=1 N4096 K4096 | Apple M5 Max, 6 threads, aarch64 DotProd | same | 0.138599 ms | CV 0.0852 | same | 5.33x over direct portable ref; 128.6 W-GB/s; candidate |

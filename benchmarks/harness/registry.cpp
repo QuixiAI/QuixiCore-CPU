@@ -9,6 +9,7 @@ void build_qgemv_cases(const BuildCtx&, std::vector<CaseDecl>&);
 void build_qgemv_formats_cases(const BuildCtx&, std::vector<CaseDecl>&);
 void build_rms_norm_cases(const BuildCtx&, std::vector<CaseDecl>&);
 void build_contract_ops_cases(const BuildCtx&, std::vector<CaseDecl>&);
+void build_ported_ops_cases(const BuildCtx&, std::vector<CaseDecl>&);
 
 // Explicit table instead of static-initializer self-registration: no
 // init-order or dead-stripping hazards, and --list ordering is stable.
@@ -20,6 +21,7 @@ const std::vector<KernelEntry>& kernel_registry() {
       {"qgemv_formats", &build_qgemv_formats_cases},
       {"rms_norm", &build_rms_norm_cases},
       {"contract_ops", &build_contract_ops_cases},
+      {"ported_ops", &build_ported_ops_cases},
   };
   return registry;
 }

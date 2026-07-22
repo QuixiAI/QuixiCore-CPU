@@ -5,14 +5,17 @@
 // activation-quantizing experiments are not members of this dispatch table.
 
 #include "quixicore_cpu/qgemv.h"
+#include "quixicore_cpu/quantization.h"
 
 #include <climits>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <memory>
 
 #include "kernels/quantization/qgemv.h"
 #include "kernels/quantization/qgemv_w8a8.h"
+#include "kernels/quantization/gguf_ref.h"
 #include "quixicore_cpu/cpu_features.h"
 
 namespace quixicore_cpu {
@@ -56,12 +59,11 @@ const Q8_0Variant& resolve_q8_0() {
 }
 
 Status validate(QuantFormat format, long long n, long long k) {
-  if (format != QuantFormat::kQ8_0 && format != QuantFormat::kQ4_0) {
+  long long block_size = 0;
+  std::size_t block_bytes = 0;
+  if (!quant::gguf_format_info(format, &block_size, &block_bytes)) {
     return Status::kUnsupportedFormat;
   }
-  const long long block_size = format == QuantFormat::kQ8_0
-                                   ? quant::kQ8_0BlockSize
-                                   : quant::kQ4_0BlockSize;
   if (n <= 0 || k <= 0 || k % block_size != 0) {
     return Status::kInvalidShape;
   }
@@ -84,12 +86,11 @@ bool checked_mul(size_t a, size_t b, size_t* out) {
 
 Status packed_size(QuantFormat format, long long n, long long k,
                    size_t* size) {
-  const long long block_size = format == QuantFormat::kQ8_0
-                                   ? quant::kQ8_0BlockSize
-                                   : quant::kQ4_0BlockSize;
-  const size_t block_bytes = format == QuantFormat::kQ8_0
-                                 ? sizeof(quant::BlockQ8_0)
-                                 : sizeof(quant::BlockQ4_0);
+  long long block_size = 0;
+  size_t block_bytes = 0;
+  if (!quant::gguf_format_info(format, &block_size, &block_bytes)) {
+    return Status::kUnsupportedFormat;
+  }
   size_t blocks = 0;
   if (!checked_mul(static_cast<size_t>(n),
                    static_cast<size_t>(k / block_size), &blocks) ||
@@ -126,6 +127,25 @@ Status qgemv_pack(QuantFormat format, const float* weights, long long n,
   if (weights == nullptr || packed == nullptr) {
     return Status::kInvalidArgument;
   }
+  if (format != QuantFormat::kQ8_0 && format != QuantFormat::kQ4_0 &&
+      format != QuantFormat::kTQ2_0) {
+    return Status::kUnsupportedFormat;
+  }
+  if (format == QuantFormat::kTQ2_0) {
+    // The public pack operation does not expose the optional dequantized tensor.
+    // Reuse the output matrix as temporary storage after validating finiteness;
+    // tq2_0_pack reads a whole block before writing the corresponding values.
+    // A dedicated scratch avoids surprising callers that overlap the buffers.
+    size_t elements = 0;
+    if (!checked_mul(static_cast<size_t>(n), static_cast<size_t>(k),
+                     &elements) ||
+        elements > std::numeric_limits<size_t>::max() / sizeof(float)) {
+      return Status::kInvalidShape;
+    }
+    auto scratch = std::make_unique<float[]>(elements);
+    return tq2_0_pack(weights, static_cast<std::uint8_t*>(packed), scratch.get(),
+                      n, k);
+  }
   const bool packed_ok =
       format == QuantFormat::kQ8_0
           ? quant::q8_0_pack_ref(weights, n, k,
@@ -151,9 +171,11 @@ Status qgemv_unpack(QuantFormat format, const void* packed, long long n,
   if (format == QuantFormat::kQ8_0) {
     quant::q8_0_unpack_ref(static_cast<const quant::BlockQ8_0*>(packed), n, k,
                            weights);
-  } else {
+  } else if (format == QuantFormat::kQ4_0) {
     quant::q4_0_unpack_ref(static_cast<const quant::BlockQ4_0*>(packed), n, k,
                            weights);
+  } else {
+    quant::gguf_unpack_ref(format, packed, n, k, weights);
   }
   return Status::kOk;
 }
@@ -174,9 +196,11 @@ Status qgemv(QuantFormat format, const void* packed, const float* x, float* y,
   if (format == QuantFormat::kQ8_0) {
     resolve_q8_0().fn(static_cast<const quant::BlockQ8_0*>(packed), x, y, n,
                       k);
-  } else {
+  } else if (format == QuantFormat::kQ4_0) {
     quant::q4_0_gemv_ref(static_cast<const quant::BlockQ4_0*>(packed), x, y,
                          n, k);
+  } else {
+    quant::gguf_gemv_ref(format, packed, x, y, n, k);
   }
   return Status::kOk;
 }
@@ -188,7 +212,11 @@ const char* qgemv_variant(QuantFormat format) {
   if (format == QuantFormat::kQ4_0) {
     return "ref";
   }
-  return "unsupported";
+  long long ignored_size = 0;
+  std::size_t ignored_bytes = 0;
+  return quant::gguf_format_info(format, &ignored_size, &ignored_bytes)
+             ? "ref"
+             : "unsupported";
 }
 
 }  // namespace quixicore_cpu

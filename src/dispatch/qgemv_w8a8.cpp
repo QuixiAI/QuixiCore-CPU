@@ -59,6 +59,9 @@ const Q8_0Variant& resolve_q8_0() {
 }
 
 Status validate(QuantFormat format, long long n, long long k) {
+  if (format != QuantFormat::kQ8_0 && format != QuantFormat::kQ4_0) {
+    return Status::kUnsupportedFormat;
+  }
   std::size_t ignored = 0;
   return qgemv_packed_size(format, n, k, &ignored);
 }

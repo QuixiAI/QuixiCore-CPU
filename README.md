@@ -1,9 +1,10 @@
 # QuixiCore CPU
 
 QuixiCore CPU is the experimental host CPU backend for the QuixiCore kernel
-contract. It provides portable f32 reference paths for every active v0.1
-kernel family, q8_0/q4_0 GEMV, q8_0 GEMM, and selected sibling-backend
-utilities.
+contract. It provides portable f32 reference semantics for every active v0.1
+family and for the top-level operation union inventoried from the Metal, XPU,
+CUDA, and ROCm siblings, including their quantized, serving, training, vision,
+state-space, and collective extensions.
 CPU-resident implementations use runtime ISA dispatch and a persistent
 fork-join thread pool behind the shared API semantics.
 
@@ -20,10 +21,12 @@ The CPU backend targets:
 - `aarch64`: scalar baseline first, then NEON, DotProd, I8MM, SVE, and SME
   variants when hardware and benchmark evidence are available.
 
-The current portable surface includes norms, activations, attention and decode,
-q8_0 projection, sampling/serving, Mamba selective scan, MoE routing/grouped
-GEMM, and AdamW. SIMD specialization beyond the existing aarch64 RMSNorm and
-q8_0 GEMV routes remains future performance work.
+The current portable surface includes norms and backward paths, activations,
+dense/quantized matmul, attention and decode, the sibling packed-format
+decoders, sampling/serving, embeddings and KV caches, linear attention,
+Mamba/SSD/FFT-convolution semantics, MoE, vision, training utilities, and
+host-reference collectives. SIMD specialization beyond the existing aarch64
+RMSNorm and q8_0 GEMV routes remains future performance work.
 
 ## Repository Layout
 
