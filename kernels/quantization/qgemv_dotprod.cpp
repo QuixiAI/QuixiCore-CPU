@@ -7,14 +7,13 @@
 // dot is exact; activation quantization adds bounded error well inside the
 // umbrella quantized tolerance (see tests/correctness/test_qgemv.cpp).
 //
-// NOTE: activation quantization diverges from the family qgemv contract
-// (dequantize(wq) @ x with full-precision activations), so public dispatch
-// never exposes this variant. It is an internal benchmark baseline that
-// previews the future qgemv_w8a8 twin op the sibling backends expose.
+// NOTE: activation quantization diverges from weight-only qgemv
+// (dequantize(wq) @ x with full-precision activations), so that dispatch never
+// exposes this variant. It is selected only by qgemv_w8a8.
 //
 // This file is added to the build only when the toolchain can target
 // dotprod (cmake/QuixiCoreCPUFeatures.cmake) and is called only after
-// runtime detection confirms the feature (src/dispatch/qgemv.cpp).
+// runtime detection confirms the feature (src/dispatch/qgemv_w8a8.cpp).
 
 #if (defined(__aarch64__) || defined(_M_ARM64)) && \
     defined(QUIXICORE_CPU_ISA_DOTPROD)

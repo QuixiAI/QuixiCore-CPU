@@ -9,15 +9,14 @@ namespace quixicore_cpu {
 enum class QuantFormat {
   kQ8_0,  // GGUF q8_0: 32-element blocks, fp16 scale + 32 int8 values
   kQ4_0,  // GGUF q4_0: 32-element blocks, fp16 scale + 16 packed nibbles
-          // (-8 offset). Weight-only qgemv keeps f32 activations; the
-          // activation-quantizing integer path for kQ4_0 lives in qgemv_w8a8.
+          // (-8 offset)
 };
 
 // Quantized GEMV, QuixiCore family contract: out = dequantize(wq) @ x with
 // full-precision activations (f32 on CPU) and f32 accumulation. Matches the
-// Metal/CUDA `qgemv` semantics and oracle; block layouts are llama.cpp/GGUF
-// byte-compatible. Activation-quantizing integer paths are NOT this op —
-// they belong to a future `qgemv_w8a8` twin, per the sibling backends.
+// sibling `qgemv` semantics and oracle; q8_0 and q4_0 block layouts are
+// llama.cpp/GGUF byte-compatible. Activation-quantizing integer paths are a
+// separate `qgemv_w8a8` operation.
 
 // Packed size in bytes of an n x k row-major weight matrix
 // (layout (n, k/block_k, block_bytes), blocks along the contraction axis).

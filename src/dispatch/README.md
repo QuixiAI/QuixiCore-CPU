@@ -13,5 +13,6 @@ Responsibilities:
 - one-time platform enablement handshakes (e.g. Linux AMX XTILE_DATA
   permission via `arch_prctl` before any tile instruction runs).
 
-Current dispatchers cover qgemv and RMSNorm. Internal experimental kernels
-whose numerics differ from the shared contract are not registered here.
+Current dispatchers cover qgemv, qgemv_w8a8, and RMSNorm. Weight-only and
+activation-quantized GEMV remain separate public operations and dispatch
+tables.

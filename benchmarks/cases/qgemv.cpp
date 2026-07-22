@@ -9,10 +9,9 @@
 //                     auto-vectorized plain loop); kept here so the A/B
 //                     stays reproducible,
 //   dequant_sgemv   — naive decomposed path: unpack to f32, then scalar GEMV,
-//   dotprod_i8      — the activation-quantizing int8 SDOT path (internal
-//                     benchmark baseline; contract-divergent numerics). Kept
-//                     so the speed of the future qgemv_w8a8 twin op stays
-//                     visible without exposing it through public dispatch.
+//   dotprod_i8      — the activation-quantizing int8 SDOT path used by the
+//                     separate qgemv_w8a8 operation; retained here as context,
+//                     never selected by weight-only qgemv dispatch.
 // The roofline comparison is weight_gbps vs mem_triad DRAM bandwidth.
 //
 // The in-harness oracle is the family oracle (dequantized weights x f32

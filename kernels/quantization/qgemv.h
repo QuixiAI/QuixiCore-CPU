@@ -46,7 +46,7 @@ void q8_0_gemv_neon(const BlockQ8_0* packed, const float* x, float* y,
 // AArch64 DotProd experiment: quantizes activations to int8 blocks per call,
 // then int8 x int8 SDOT with per-block combined scales. Different numerics
 // than the family qgemv contract (activation quantization), so it is exposed
-// only to internal tests/benchmarks while previewing a future qgemv_w8a8 op.
+// only through the separate qgemv_w8a8 public dispatch.
 // Compiled only when the build defines QUIXICORE_CPU_HAVE_QGEMV_DOTPROD;
 // call only when cpu_features().dotprod is true.
 void q8_0_gemv_dotprod(const BlockQ8_0* packed, const float* x, float* y,

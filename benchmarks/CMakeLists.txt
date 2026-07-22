@@ -14,6 +14,7 @@ add_executable(quixicore_cpu_bench
   cases/contract_ops.cpp
   cases/mem_triad.cpp
   cases/qgemv.cpp
+  cases/qgemv_formats.cpp
   cases/rms_norm.cpp
   cases/sgemv_naive.cpp
 )

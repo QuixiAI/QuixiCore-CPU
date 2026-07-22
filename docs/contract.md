@@ -41,11 +41,13 @@ backend follows them (verified 2026-07-07 against QuixiCore-Metal
 `dequant.metal`/`tk/quant.py` and QuixiCore-CUDA `quant_formats.cuh`):
 
 - `qgemv`: `out = dequantize(wq) @ x`, full-precision activations (f32 on
-  CPU; Metal/CUDA use fp16), f32 accumulation. Quant block layouts are
-  llama.cpp/GGUF byte-compatible (`q8_0` = 34 bytes: fp16 scale + 32 int8,
-  round-to-nearest-even packing). Activation-quantized integer math is a
-  separate op (`qgemv_w8a8` in the siblings; planned here) — never the
-  default `qgemv` path.
+  CPU; Metal/CUDA use fp16), f32 accumulation. The implemented GGUF layouts
+  are q8_0 (34 bytes: fp16 scale + 32 int8) and q4_0 (18 bytes: fp16 scale +
+  16 packed nibbles). Activation-quantized integer math is exposed separately
+  as `qgemv_w8a8` and never selected by the default `qgemv` route.
+- `qgemv_w8a8`: `out = dequantize(wq) @ dequantize(blockwise_int8(x))` for
+  q4_0 or q8_0 weights. The q8_0 route selects aarch64 DotProd when available;
+  portable references anchor both formats.
 - `rms_norm`: `y = x * rsqrt(mean(x^2) + eps) * weight`, eps inside the
   sqrt, fp32 (or better) accumulation, multiplicative weight, no bias,
   default `eps = 1e-5`.

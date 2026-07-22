@@ -7,13 +7,11 @@ Phase 2): quantized GEMV/GEMM dominates low-batch CPU decode.
 
 Status: `quant_gemv` family in progress, exposed as `qgemv` (family op
 naming). Contract semantics per Metal/CUDA: `out = dequantize(wq) @ x`,
-full-precision activations, f32 accumulation, GGUF-byte-compatible q8_0.
-Public variants: `ref` scalar and `neon` f32-activation (contract default on
-aarch64). `dotprod_i8` is an internal int8 SDOT benchmark experiment whose
-activation quantization is contract-divergent; it previews a future
-`qgemv_w8a8` twin op and cannot be selected through public dispatch.
-Dispatch in `src/dispatch/qgemv.cpp`, correctness in
-`tests/correctness/test_qgemv.cpp`, evidence in
-`perf/optimization_status.md` (2026-07-07). Not claimed supported; next:
-`qgemv_w8a8`, q4_0, i8mm qgemm. `quant_gemm`, `quantized_lm_head`:
-planned.
+full-precision activations, f32 accumulation, and GGUF-byte-compatible q8_0
+and q4_0 weights. Public q8_0 variants are portable `ref` and aarch64 `neon`;
+q4_0 currently uses its portable reference. The separate `qgemv_w8a8` route
+quantizes activations per 32-element block and supports q4_0 (`ref`) and q8_0
+(`ref` or aarch64 `dotprod`). Dispatch lives in `src/dispatch/qgemv*.cpp`,
+correctness in `tests/correctness/test_qgemv*.cpp`, and evidence in
+`perf/optimization_status.md`. q8_0 QGEMM and quantized LM-head composition are
+implemented; further GGUF formats and ISA-tuned q4_0 remain planned.

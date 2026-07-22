@@ -394,36 +394,38 @@ int main() {
             static_cast<float>((row + 1) * (i - 16)) / 32.0f;
       }
     }
-    std::size_t packed_size = 0;
-    REQUIRE(qgemv_packed_size(QuantFormat::kQ8_0, kRows, kHidden,
-                              &packed_size) == Status::kOk);
-    std::vector<std::uint8_t> packed(packed_size);
-    REQUIRE(qgemv_pack(QuantFormat::kQ8_0, weights.data(), kRows, kHidden,
-                       packed.data()) == Status::kOk);
     std::vector<float> x(static_cast<std::size_t>(2 * kHidden));
     for (long long i = 0; i < kHidden; ++i) {
       x[static_cast<std::size_t>(i)] = static_cast<float>(i + 1) / 32.0f;
       x[static_cast<std::size_t>(kHidden + i)] = -x[static_cast<std::size_t>(i)];
     }
-    float matrix_out[6] = {};
-    REQUIRE(qgemm(QuantFormat::kQ8_0, packed.data(), x.data(), matrix_out, 2,
-                  kRows, kHidden) == Status::kOk);
-    float vector_out[3] = {};
-    REQUIRE(qgemv(QuantFormat::kQ8_0, packed.data(), x.data(), vector_out,
-                  kRows, kHidden) == Status::kOk);
-    for (int i = 0; i < 3; ++i) REQUIRE(matrix_out[i] == vector_out[i]);
-    int tokens[2] = {};
-    REQUIRE(quantized_lm_head_argmax(QuantFormat::kQ8_0, packed.data(),
-                                     x.data(), tokens, 2, kRows, kHidden) ==
-            Status::kOk);
-    for (int row = 0; row < 2; ++row) {
-      int best = 0;
-      for (int token = 1; token < 3; ++token) {
-        if (matrix_out[row * 3 + token] > matrix_out[row * 3 + best]) {
-          best = token;
+    for (const QuantFormat format : {QuantFormat::kQ8_0,
+                                     QuantFormat::kQ4_0}) {
+      std::size_t packed_size = 0;
+      REQUIRE(qgemv_packed_size(format, kRows, kHidden, &packed_size) ==
+              Status::kOk);
+      std::vector<std::uint8_t> packed(packed_size);
+      REQUIRE(qgemv_pack(format, weights.data(), kRows, kHidden,
+                         packed.data()) == Status::kOk);
+      float matrix_out[6] = {};
+      REQUIRE(qgemm(format, packed.data(), x.data(), matrix_out, 2, kRows,
+                    kHidden) == Status::kOk);
+      float vector_out[3] = {};
+      REQUIRE(qgemv(format, packed.data(), x.data(), vector_out, kRows,
+                    kHidden) == Status::kOk);
+      for (int i = 0; i < 3; ++i) REQUIRE(matrix_out[i] == vector_out[i]);
+      int tokens[2] = {};
+      REQUIRE(quantized_lm_head_argmax(format, packed.data(), x.data(), tokens,
+                                       2, kRows, kHidden) == Status::kOk);
+      for (int row = 0; row < 2; ++row) {
+        int best = 0;
+        for (int token = 1; token < 3; ++token) {
+          if (matrix_out[row * 3 + token] > matrix_out[row * 3 + best]) {
+            best = token;
+          }
         }
+        REQUIRE(tokens[row] == best);
       }
-      REQUIRE(tokens[row] == best);
     }
   }
 

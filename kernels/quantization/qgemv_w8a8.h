@@ -6,6 +6,8 @@
 
 #include <cstdint>
 
+#include "kernels/quantization/qgemv.h"
+
 namespace quixicore_cpu::quant {
 
 inline constexpr long long kQ4_0BlockSize = 32;
@@ -30,12 +32,22 @@ bool q4_0_pack_ref(const float* weights, long long n, long long k,
 void q4_0_unpack_ref(const BlockQ4_0* packed, long long n, long long k,
                      float* weights);
 
+// Weight-only q4_0 GEMV: dequantized weights times full-precision f32
+// activations, matching the public qgemv contract.
+void q4_0_gemv_ref(const BlockQ4_0* packed, const float* x, float* y,
+                   long long n, long long k);
+
 // y = dequant(W) . quant(x): quantize x [k] to per-32-block int8 once
 // (d = amax/127, round-to-nearest), then per row a 4-bit x int8 integer dot
 // per block scaled by the combined fp16 scales, f32 accumulation. Deterministic.
 using Q4_0W8A8GemvFn = void (*)(const BlockQ4_0* packed, const float* x,
                                 float* y, long long n, long long k);
 void q4_0_gemv_w8a8_ref(const BlockQ4_0* packed, const float* x, float* y,
+                        long long n, long long k);
+
+// Portable q8_0 x per-block-int8-activation anchor for qgemv_w8a8. The
+// aarch64 DotProd implementation is an ISA variant of these semantics.
+void q8_0_gemv_w8a8_ref(const BlockQ8_0* packed, const float* x, float* y,
                         long long n, long long k);
 
 }  // namespace quixicore_cpu::quant

@@ -12,6 +12,7 @@
 
 #include "kernels/common/fp16.h"
 #include "kernels/quantization/qgemv.h"
+#include "kernels/quantization/qgemv_w8a8.h"
 #include "quixicore_cpu/cpu_features.h"
 #include "quixicore_cpu/qgemv.h"
 
@@ -116,6 +117,9 @@ int main() {
   REQUIRE(quixicore_cpu::qgemv_packed_size(QuantFormat::kQ8_0, 4, 64, &size) ==
           Status::kOk);
   REQUIRE(size == 4 * 2 * 34);
+  REQUIRE(quixicore_cpu::qgemv_packed_size(QuantFormat::kQ4_0, 4, 64,
+                                           &size) == Status::kOk);
+  REQUIRE(size == 4 * 2 * 18);
 
   // Packing must reject non-finite weights before any float-to-int cast.
   {
@@ -129,6 +133,48 @@ int main() {
     REQUIRE(quixicore_cpu::qgemv_pack(QuantFormat::kQ8_0, bad.data(), 1, 32,
                                       packed.data()) ==
             Status::kInvalidArgument);
+    bad[7] = std::numeric_limits<float>::quiet_NaN();
+    REQUIRE(quixicore_cpu::qgemv_pack(QuantFormat::kQ4_0, bad.data(), 1, 32,
+                                      packed.data()) ==
+            Status::kInvalidArgument);
+  }
+
+  // q4_0 weight-only GEMV uses the same full-precision-activation contract.
+  {
+    const long long n = 33;
+    const long long k = 512;
+    Rng rng(0xD1B54A32u);
+    std::vector<float> weights(static_cast<std::size_t>(n * k));
+    std::vector<float> x(static_cast<std::size_t>(k));
+    for (auto& value : weights) {
+      value = rng.next();
+    }
+    for (auto& value : x) {
+      value = rng.next();
+    }
+    REQUIRE(quixicore_cpu::qgemv_packed_size(QuantFormat::kQ4_0, n, k,
+                                             &size) == Status::kOk);
+    std::vector<std::uint8_t> packed(size);
+    REQUIRE(quixicore_cpu::qgemv_pack(QuantFormat::kQ4_0, weights.data(), n,
+                                      k, packed.data()) == Status::kOk);
+    std::vector<float> dequantized(static_cast<std::size_t>(n * k));
+    REQUIRE(quixicore_cpu::qgemv_unpack(QuantFormat::kQ4_0, packed.data(), n,
+                                        k, dequantized.data()) == Status::kOk);
+    std::vector<float> output(static_cast<std::size_t>(n));
+    REQUIRE(quixicore_cpu::qgemv(QuantFormat::kQ4_0, packed.data(), x.data(),
+                                 output.data(), n, k) == Status::kOk);
+    std::vector<double> reference(static_cast<std::size_t>(n));
+    for (long long row = 0; row < n; ++row) {
+      double sum = 0.0;
+      for (long long column = 0; column < k; ++column) {
+        sum += dequantized[static_cast<std::size_t>(row * k + column)] *
+               static_cast<double>(x[static_cast<std::size_t>(column)]);
+      }
+      reference[static_cast<std::size_t>(row)] = sum;
+    }
+    REQUIRE(all_close(output.data(), reference, 1e-5, 1e-4));
+    REQUIRE(std::string(quixicore_cpu::qgemv_variant(QuantFormat::kQ4_0)) ==
+            "ref");
   }
 
   // A scale below the minimum normal fp16 value is still a valid fp16

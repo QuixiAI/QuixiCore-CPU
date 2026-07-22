@@ -86,8 +86,11 @@ failed oracle produces an `error` row and a nonzero process exit:
   Release flags is part of the definition.
 - `qgemv` — public q8_0 GEMV on the contract `quant_matmul` m=1 shapes,
   checked against float64 accumulation over exactly dequantized weights.
-  Contract-compatible f32-activation variants are timed; the internal
-  activation-quantizing dot-product experiment remains a named baseline only.
+  Contract-compatible f32-activation variants are timed; activation-quantized
+  math is exposed only through the separate `qgemv_w8a8` operation.
+- `qgemv_formats` — q4_0 weight-only GEMV and q4_0/q8_0 W8A8 GEMV at the
+  registry N4096 K4096 decode shape. W8A8 correctness is checked against
+  independently dequantized weights and blockwise-int8 activations.
 - `rms_norm` — public f32 RMSNorm over `decode_small` shapes plus an R512
   throughput stress shape, checked against a float64 oracle.
 - `contract_ops` — portable f32 softmax, causal attention, MoE top-k routing,

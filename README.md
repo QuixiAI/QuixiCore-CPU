@@ -2,7 +2,8 @@
 
 QuixiCore CPU is the experimental host CPU backend for the QuixiCore kernel
 contract. It provides portable f32 reference paths for every active v0.1
-kernel family, plus q8_0 GEMV/GEMM and selected sibling-backend utilities.
+kernel family, q8_0/q4_0 GEMV, q8_0 GEMM, and selected sibling-backend
+utilities.
 CPU-resident implementations use runtime ISA dispatch and a persistent
 fork-join thread pool behind the shared API semantics.
 

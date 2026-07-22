@@ -21,7 +21,7 @@ quant-format scope.
 | `causal_attention` | `attention`, `rope` | f32; MHA/GQA, causal or non-causal, NeoX RoPE | Attention benchmarked |
 | `paged_attention` | `paged_attention` | f32; paged KV cache, optional sliding window | Implemented |
 | `mla_decode` | `mla_decode` | f32 latent-cache decode | Implemented |
-| `quant_gemv` | `qgemv` | f32 activation, GGUF q8_0 weights | Benchmarked |
+| `quant_gemv` | `qgemv`, `qgemv_w8a8` | f32 activation with GGUF q8_0/q4_0 weights; optional blockwise int8 activation | Benchmarked |
 | `quant_gemm` | `qgemm` | f32 activation, GGUF q8_0 weights | Benchmarked |
 | `quantized_lm_head` | `quantized_lm_head_argmax` | f32 activation, GGUF q8_0 weights | Implemented |
 | `sampling` | `argmax_sample`, `sample_categorical`, `top_k_sample`, `top_p_sample`, `min_p_sample` | f32 logits | Implemented |
@@ -52,8 +52,8 @@ entries.
 
 ## Deliberate non-claims
 
-This batch does not claim fp16, bf16, FP8, FP4/MX, int4, ternary, or GGUF
-formats other than q8_0. It also does not claim GPU-specific tile variants,
+This batch does not claim fp16, bf16, FP8, FP4/MX, ternary, or GGUF formats
+other than q8_0 and q4_0. It also does not claim GPU-specific tile variants,
 tensor-core/MFMA/AMX implementations, distributed collectives, vision kernels,
 attention/norm backward passes, FFT convolution, quantized MoE fusions, or the
 many repo-local composite epilogues. Those require explicit shared semantics,
