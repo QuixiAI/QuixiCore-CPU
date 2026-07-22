@@ -135,6 +135,9 @@ if(QUIXICORE_CPU_BUILD_TESTS)
   target_include_directories(test_qgemv_w8a8
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # kernel-internal headers
   add_test(NAME qgemv_w8a8 COMMAND test_qgemv_w8a8)
+  add_test(NAME qgemv_w8a8_forced_dotprod COMMAND test_qgemv_w8a8)
+  set_tests_properties(qgemv_w8a8_forced_dotprod PROPERTIES
+    ENVIRONMENT "QUIXICORE_CPU_QGEMV_W8A8_VARIANT=dotprod")
 
   add_executable(test_gguf_formats tests/correctness/test_gguf_formats.cpp)
   target_link_libraries(test_gguf_formats PRIVATE QuixiCoreCPU::quixicore_cpu)

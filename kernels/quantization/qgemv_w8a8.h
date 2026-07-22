@@ -45,6 +45,14 @@ using Q4_0W8A8GemvFn = void (*)(const BlockQ4_0* packed, const float* x,
 void q4_0_gemv_w8a8_ref(const BlockQ4_0* packed, const float* x, float* y,
                         long long n, long long k);
 
+// AArch64 DotProd (SDOT) variant of q4_0_gemv_w8a8_ref: identical activation
+// quantization and integer-dot semantics, with each 32-weight block nibble-
+// unpacked (-8 offset) and dotted via vdotq_s32. Built only under
+// QUIXICORE_CPU_ISA_DOTPROD; selected at runtime when features.dotprod
+// (src/dispatch/qgemv_w8a8.cpp).
+void q4_0_gemv_w8a8_dotprod(const BlockQ4_0* packed, const float* x, float* y,
+                            long long n, long long k);
+
 // Portable q8_0 x per-block-int8-activation anchor for qgemv_w8a8. The
 // aarch64 DotProd implementation is an ISA variant of these semantics.
 void q8_0_gemv_w8a8_ref(const BlockQ8_0* packed, const float* x, float* y,

@@ -23,6 +23,7 @@ performance claim must add a focused optimization entry here.
 
 | Date | Kernel | Dtype / Format | Shape Set | Target | Baseline | Candidate | Decision | Evidence |
 |---|---|---|---|---|---:|---:|---|---|
+| 2026-07-22 | qgemv_w8a8 q4_0 SDOT (dotprod_i8) | q4_0 weight / int8 act | quant_matmul m=1 (perf validation pending) | aarch64 DotProd | q4_0 w8a8 scalar ref | NEON SDOT (perf pending) | land; correctness validated (NEON==ref 1.3e-6), perf pending maintainer link env | see "2026-07-22: qgemv_w8a8 q4_0 SDOT" section below |
 | 2026-07-22 | MXFP8 logical-scale GEMM | E4M3 / E8M0 | M16 N128 K256 G32 | portable table-decoded reference, 1/6 threads | direct decoder 1.6688 / 0.3660 ms | lookup decoder 0.4608 / 0.1229 ms | keep lookup; 3.62x/2.98x faster, still below predecoded dense | `perf/results/2026-07-22/sibling-entrypoints-{final,lookup}-t{1,6}/` |
 | 2026-07-22 | fused RMSNorm-add + dynamic quantization | f32 / group int8 | R512 H4096 G128 | portable fused reference, 1/6 threads | 3.2327 / 1.2658 ms | 3.2725 / 1.2906 ms | keep semantic fusion; 1.2-2.0% allocation cost, no speedup claim | `perf/results/2026-07-22/ported-ops-final-{t1,t6}/` |
 | 2026-07-22 | q4_0 qgemv + q4_0/q8_0 qgemv_w8a8 | q4_0/q8_0, f32/int8 activation | quant_matmul m=1 N4096 K4096 | portable refs + aarch64 DotProd, 6 threads | q8 W8A8 ref 0.7394 ms | q8 W8A8 DotProd 0.1386 ms | keep public routes; q4 references are correctness anchors, q8 DotProd is 5.33x | `perf/results/2026-07-22/qgemv-formats-final-t6-fixed/` |
@@ -622,3 +623,45 @@ is claimed.
 - Working-tree label: `15a78dc-dirty`.
 - Raw results:
   `perf/results/2026-07-22/qgemv-formats-final-t6-fixed/`.
+
+## 2026-07-22: qgemv_w8a8 q4_0 SDOT (dotprod_i8)
+
+Status: landed; correctness validated; on-hardware perf pending in the
+maintainer link environment.
+
+New variant: `q4_0_gemv_w8a8_dotprod` — the aarch64 DotProd (SDOT) SIMD variant
+of the q4_0-weight x int8-activation GEMV, completing the q4_0 lane of
+`qgemv_w8a8` (which previously ran only the scalar `q4_0_gemv_w8a8_ref` while the
+q8_0 lane already had its `dotprod` variant). Ported from embeddinggemma.c's
+proven `ei_vec_dot_q4_0_q8_0_neon` (`src/quants.c`) and structured exactly like
+the existing `q8_0_gemv_dotprod`: activations quantized once per call to
+per-32-block int8 (shared, `thread_local` scratch), each 32-weight block
+nibble-unpacked (`vandq_u8`/`vshrq_n_u8`, `-8` offset via `vsubq_s8`) and dotted
+with `vdotq_s32`, lane-wise f32 accumulation with the combined fp16 scales,
+rows partitioned across the thread pool. Selected last-wins by CPU feature via a
+new `kQ4_0Variants` table mirroring `kQ8_0Variants`; forced with
+`QUIXICORE_CPU_QGEMV_W8A8_VARIANT=dotprod`.
+
+Correctness:
+- Standalone runtime check (NEON variant vs the scalar reference on the same
+  packed weights + per-block-quantized activations): **max rel diff 1.28e-6**
+  (pure fp summation-order; the int8 dot is exact). The intrinsics are correct.
+- fp64-oracle CTest wired: `qgemv_w8a8_forced_dotprod` re-runs
+  `test_qgemv_w8a8` with the variant forced to `dotprod`, so the SDOT path is
+  checked against `dequant(wq) @ x` at the umbrella quantized tolerance.
+- Full library compiles clean (`cmake --build --target quixicore_cpu`, dotprod
+  ISA source built, no warnings).
+
+Measurement note (honesty gate): this environment cannot LINK the test
+executables (the pre-existing libc++ ABI mismatch that also hits
+`test_cpu_features`), so no CTest run or perf number was produced here. No
+speedup is claimed. The q8_0 SDOT precedent (14.4x over scalar, ~51% of DRAM
+roofline) suggests a comparable SDOT-bound win, but that is NOT a claim until
+measured. To close the perf gate in the maintainer env (Apple Clang 21):
+
+    cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
+    ctest --test-dir build -R 'qgemv_w8a8'   # incl. qgemv_w8a8_forced_dotprod
+    scripts/bench --preset quick             # q4_0 w8a8 dotprod vs ref/scalar
+
+Follow-up: AVX2/VNNI x86 variant of the same q4_0 w8a8 dot (QuixiCore-CPU still
+has no x86 SIMD in the quant family).

@@ -58,6 +58,44 @@ const Q8_0Variant& resolve_q8_0() {
   return chosen;
 }
 
+struct Q4_0Variant {
+  const char* name;
+  quant::Q4_0W8A8GemvFn fn;
+  bool (*supported)(const CpuFeatures&);
+};
+
+constexpr Q4_0Variant kQ4_0Variants[] = {
+    {"ref", &quant::q4_0_gemv_w8a8_ref,
+     [](const CpuFeatures&) { return true; }},
+#if defined(QUIXICORE_CPU_HAVE_QGEMV_DOTPROD)
+    {"dotprod", &quant::q4_0_gemv_w8a8_dotprod,
+     [](const CpuFeatures& features) { return features.dotprod; }},
+#endif
+};
+
+const Q4_0Variant& resolve_q4_0() {
+  static const Q4_0Variant& chosen = []() -> const Q4_0Variant& {
+    const CpuFeatures& features = cpu_features();
+    const char* forced = std::getenv("QUIXICORE_CPU_QGEMV_W8A8_VARIANT");
+    if (forced != nullptr) {
+      for (const auto& variant : kQ4_0Variants) {
+        if (std::strcmp(variant.name, forced) == 0 &&
+            variant.supported(features)) {
+          return variant;
+        }
+      }
+    }
+    const Q4_0Variant* best = &kQ4_0Variants[0];
+    for (const auto& variant : kQ4_0Variants) {
+      if (variant.supported(features)) {
+        best = &variant;
+      }
+    }
+    return *best;
+  }();
+  return chosen;
+}
+
 Status validate(QuantFormat format, long long n, long long k) {
   if (format != QuantFormat::kQ8_0 && format != QuantFormat::kQ4_0) {
     return Status::kUnsupportedFormat;
@@ -108,8 +146,8 @@ Status qgemv_w8a8(QuantFormat format, const void* packed_weights,
     resolve_q8_0().fn(static_cast<const quant::BlockQ8_0*>(packed_weights), x,
                       y, n, k);
   } else {
-    quant::q4_0_gemv_w8a8_ref(
-        static_cast<const quant::BlockQ4_0*>(packed_weights), x, y, n, k);
+    resolve_q4_0().fn(static_cast<const quant::BlockQ4_0*>(packed_weights), x,
+                      y, n, k);
   }
   return Status::kOk;
 }
@@ -119,7 +157,7 @@ const char* qgemv_w8a8_variant(QuantFormat format) {
     return resolve_q8_0().name;
   }
   if (format == QuantFormat::kQ4_0) {
-    return "ref";
+    return resolve_q4_0().name;
   }
   return "unsupported";
 }

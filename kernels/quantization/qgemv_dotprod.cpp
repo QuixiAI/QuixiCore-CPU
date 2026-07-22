@@ -26,6 +26,7 @@
 
 #include "kernels/common/fp16.h"
 #include "kernels/quantization/qgemv.h"
+#include "kernels/quantization/qgemv_w8a8.h"
 #include "src/threading/thread_pool.h"
 
 namespace quixicore_cpu::quant {
@@ -107,6 +108,36 @@ void gemv_rows_dotprod(const BlockQ8_0* packed, const int8_t* qx_data,
   }
 }
 
+// q4_0 weight variant: nibble-unpack each 32-weight block to signed int8
+// (low nibble -> element j, high nibble -> element j+16, both minus the 8
+// offset), then the same int8 SDOT against the per-block int8 activations.
+// Byte-identical activation quantization to q4_0_gemv_w8a8_ref; the integer
+// dot is exact (lane-wise fp accumulation differs only in summation order).
+void gemv_rows_q4_0_dotprod(const BlockQ4_0* packed, const int8_t* qx_data,
+                            const float* dx_data, float* y, long long blocks,
+                            long long i0, long long i1) {
+  const uint8x16_t low_mask = vdupq_n_u8(0x0Fu);
+  const int8x16_t off = vdupq_n_s8(8);
+  for (long long i = i0; i < i1; ++i) {
+    const BlockQ4_0* row = packed + i * blocks;
+    float32x4_t sumv = vdupq_n_f32(0.0f);
+    for (long long b = 0; b < blocks; ++b) {
+      const uint8x16_t q4 = vld1q_u8(row[b].qs);
+      const int8x16_t w_lo =
+          vsubq_s8(vreinterpretq_s8_u8(vandq_u8(q4, low_mask)), off);
+      const int8x16_t w_hi =
+          vsubq_s8(vreinterpretq_s8_u8(vshrq_n_u8(q4, 4)), off);
+      const int8_t* qxb = qx_data + b * kQ4_0BlockSize;
+      int32x4_t p = vdupq_n_s32(0);
+      p = vdotq_s32(p, w_lo, vld1q_s8(qxb));
+      p = vdotq_s32(p, w_hi, vld1q_s8(qxb + 16));
+      sumv = vmlaq_n_f32(sumv, vcvtq_f32_s32(p),
+                         block_scale(row[b].d) * dx_data[b]);
+    }
+    y[i] = vaddvq_f32(sumv);
+  }
+}
+
 }  // namespace
 
 void q8_0_gemv_dotprod(const BlockQ8_0* packed, const float* x, float* y,
@@ -123,6 +154,23 @@ void q8_0_gemv_dotprod(const BlockQ8_0* packed, const float* x, float* y,
 
   threading::parallel_ranges(n, 32, [&](long long i0, long long i1, int) {
     gemv_rows_dotprod(packed, qx_data, dx_data, y, blocks, i0, i1);
+  });
+}
+
+void q4_0_gemv_w8a8_dotprod(const BlockQ4_0* packed, const float* x, float* y,
+                            long long n, long long k) {
+  const long long blocks = k / kQ4_0BlockSize;
+
+  // Activation quant is per-32-block int8, identical to the q8_0 path (block
+  // size 32 for both formats); quantize once on the caller, workers read shared.
+  thread_local std::vector<int8_t> qx;
+  thread_local std::vector<float> dx;
+  quantize_activations(x, k, qx, dx);
+  const int8_t* qx_data = qx.data();
+  const float* dx_data = dx.data();
+
+  threading::parallel_ranges(n, 32, [&](long long i0, long long i1, int) {
+    gemv_rows_q4_0_dotprod(packed, qx_data, dx_data, y, blocks, i0, i1);
   });
 }
 
