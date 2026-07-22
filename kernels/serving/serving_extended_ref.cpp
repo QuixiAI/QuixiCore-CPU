@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <vector>
 
 #include "kernels/common/validation.h"
 #include "src/threading/thread_pool.h"
@@ -27,6 +29,42 @@ Status embedding_backward(const int* ids, const float* grad_out,
     for (long long feature = 0; feature < dim; ++feature) {
       grad_table[static_cast<long long>(id) * dim + feature] +=
           grad_out[token * dim + feature];
+    }
+  }
+  return Status::kOk;
+}
+
+Status embedding_backward_sorted(const int* sorted_ids,
+                                  const int* permutation,
+                                  const float* grad_out, float* grad_table,
+                                  long long vocab, long long count,
+                                  long long dim, float scale) {
+  if (!detail::valid_product({vocab, dim}) ||
+      !detail::valid_product({count, dim}) || !std::isfinite(scale)) {
+    return Status::kInvalidShape;
+  }
+  if (!detail::all_nonnull(sorted_ids, permutation, grad_out, grad_table)) {
+    return Status::kInvalidArgument;
+  }
+  std::vector<std::uint8_t> seen(static_cast<std::size_t>(count), 0);
+  for (long long token = 0; token < count; ++token) {
+    if (token > 0 && sorted_ids[token] < sorted_ids[token - 1]) {
+      return Status::kInvalidArgument;
+    }
+    if (permutation[token] < 0 || permutation[token] >= count ||
+        seen[static_cast<std::size_t>(permutation[token])] != 0) {
+      return Status::kInvalidArgument;
+    }
+    seen[static_cast<std::size_t>(permutation[token])] = 1;
+  }
+  std::fill_n(grad_table, vocab * dim, 0.0f);
+  for (long long token = 0; token < count; ++token) {
+    const int id = sorted_ids[token];
+    if (id < 0 || id >= vocab) continue;
+    const long long source = permutation[token];
+    for (long long feature = 0; feature < dim; ++feature) {
+      grad_table[static_cast<long long>(id) * dim + feature] +=
+          scale * grad_out[source * dim + feature];
     }
   }
   return Status::kOk;

@@ -75,6 +75,13 @@ Status quantized_embedding(const void* table, const int* ids,
   return Status::kOk;
 }
 
+Status dequant_gather(const void* table, const int* ids, float* out,
+                      long long vocab, long long count, long long dim,
+                      QuantFormat quant_format, float scale) {
+  return quantized_embedding(table, ids, nullptr, out, vocab, count, dim,
+                             quant_format, scale, false);
+}
+
 Status quantized_embedding_bag(const void* table, const int* ids,
                                const long long* offsets,
                                const float* sample_weights, float* out,

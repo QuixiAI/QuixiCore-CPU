@@ -30,6 +30,7 @@ add_library(quixicore_cpu STATIC
   kernels/activations/activations_ref.cpp
   kernels/attention/attention_ref.cpp
   kernels/attention/attention_extended_ref.cpp
+  kernels/attention/attention_composites_ref.cpp
   kernels/attention/attention_serving_ref.cpp
   kernels/attention/mla_fp8_ref.cpp
   kernels/attention/varlen_metadata_ref.cpp
@@ -50,6 +51,7 @@ add_library(quixicore_cpu STATIC
   kernels/quantization/qgemv_fused_ref.cpp
   kernels/quantization/gguf_ref.cpp
   kernels/quantization/quantization_ref.cpp
+  kernels/quantization/microscale_ref.cpp
   kernels/quantization/turboquant_ref.cpp
   kernels/quantization/qgemv_neon.cpp
   kernels/quantization/qgemv_w8a8_ref.cpp
@@ -63,6 +65,7 @@ add_library(quixicore_cpu STATIC
   kernels/serving/serving_extended_ref.cpp
   kernels/serving/kv_cache_extended_ref.cpp
   kernels/serving/serving_quant_ref.cpp
+  kernels/serving/sparse_metadata_ref.cpp
   kernels/softmax/softmax_ref.cpp
   kernels/ssm/selective_scan_ref.cpp
   kernels/ssm/ssm_extended_ref.cpp
@@ -170,6 +173,12 @@ if(QUIXICORE_CPU_BUILD_TESTS)
   add_executable(test_extended_ops tests/correctness/test_extended_ops.cpp)
   target_link_libraries(test_extended_ops PRIVATE QuixiCoreCPU::quixicore_cpu)
   add_test(NAME extended_ops COMMAND test_extended_ops)
+
+  add_executable(test_sibling_entrypoints
+    tests/correctness/test_sibling_entrypoints.cpp)
+  target_link_libraries(test_sibling_entrypoints
+    PRIVATE QuixiCoreCPU::quixicore_cpu)
+  add_test(NAME sibling_entrypoints COMMAND test_sibling_entrypoints)
 
   add_executable(test_threading tests/unit/test_threading.cpp)
   target_link_libraries(test_threading PRIVATE QuixiCoreCPU::quixicore_cpu)

@@ -37,6 +37,13 @@ void top_ids(const float* logits, std::vector<int>* ids, int count) {
   if (static_cast<int>(ids->size()) > count) ids->resize(count);
 }
 
+Status dense_logits(const float* hidden_states, const float* weights,
+                    const float* bias, float* logits, long long rows,
+                    long long vocab, long long hidden) {
+  return linear_epilogue(hidden_states, weights, bias, nullptr, logits, rows,
+                         hidden, vocab, LinearActivation::kNone);
+}
+
 }  // namespace
 
 Status quantized_lm_head_sample(
@@ -55,6 +62,37 @@ Status quantized_lm_head_sample(
                         rows, vocab, hidden);
   if (status != Status::kOk) return status;
   add_bias(logits.data(), bias, rows, vocab);
+  switch (mode) {
+    case LmHeadSampling::kArgmax:
+      return argmax_sample(logits.data(), token_ids, rows, vocab);
+    case LmHeadSampling::kCategorical:
+      return sample_categorical(logits.data(), token_ids, rows, vocab,
+                                temperature, seed);
+    case LmHeadSampling::kTopK:
+      return top_k_sample(logits.data(), token_ids, rows, vocab, k,
+                          temperature, seed);
+    case LmHeadSampling::kTopP:
+      return top_p_sample(logits.data(), token_ids, rows, vocab, top_p,
+                          temperature, seed);
+  }
+  return Status::kInvalidArgument;
+}
+
+Status lm_head_sample(const float* hidden_states, const float* weights,
+                      const float* bias, int* token_ids, long long rows,
+                      long long vocab, long long hidden, LmHeadSampling mode,
+                      int k, float top_p, float temperature,
+                      std::uint32_t seed) {
+  if (!detail::valid_product({rows, vocab, hidden})) {
+    return Status::kInvalidShape;
+  }
+  if (!detail::all_nonnull(hidden_states, weights, token_ids)) {
+    return Status::kInvalidArgument;
+  }
+  std::vector<float> logits(static_cast<std::size_t>(rows * vocab));
+  Status status = dense_logits(hidden_states, weights, bias, logits.data(),
+                               rows, vocab, hidden);
+  if (status != Status::kOk) return status;
   switch (mode) {
     case LmHeadSampling::kArgmax:
       return argmax_sample(logits.data(), token_ids, rows, vocab);
@@ -117,6 +155,50 @@ Status quantized_lm_head_masked_topk(
   return Status::kOk;
 }
 
+Status lm_head_masked_topk(
+    const float* hidden_states, const float* weights, const float* bias,
+    const std::uint8_t* allow_mask, int* token_ids, float* log_probabilities,
+    long long rows, long long vocab, long long hidden, int top_k,
+    bool normalize_allowed) {
+  if (!detail::valid_product({rows, vocab, hidden}) || top_k <= 0 ||
+      top_k > vocab) {
+    return Status::kInvalidShape;
+  }
+  if (!detail::all_nonnull(hidden_states, weights, allow_mask, token_ids,
+                           log_probabilities)) {
+    return Status::kInvalidArgument;
+  }
+  std::vector<float> logits(static_cast<std::size_t>(rows * vocab));
+  Status status = dense_logits(hidden_states, weights, bias, logits.data(),
+                               rows, vocab, hidden);
+  if (status != Status::kOk) return status;
+  const long long mask_stride = (vocab + 7) / 8;
+  for (long long row = 0; row < rows; ++row) {
+    std::vector<int> allowed;
+    std::vector<int> all(static_cast<std::size_t>(vocab));
+    std::iota(all.begin(), all.end(), 0);
+    for (int token : all) {
+      if (allow_mask[row * mask_stride + token / 8] &
+          static_cast<std::uint8_t>(0x80u >> (token % 8))) {
+        allowed.push_back(token);
+      }
+    }
+    if (static_cast<int>(allowed.size()) < top_k) {
+      return Status::kInvalidArgument;
+    }
+    const float* row_logits = logits.data() + row * vocab;
+    const double lse = logsumexp_selected(row_logits,
+                                          normalize_allowed ? allowed : all);
+    top_ids(row_logits, &allowed, top_k);
+    for (int item = 0; item < top_k; ++item) {
+      token_ids[row * top_k + item] = allowed[item];
+      log_probabilities[row * top_k + item] =
+          static_cast<float>(row_logits[allowed[item]] - lse);
+    }
+  }
+  return Status::kOk;
+}
+
 Status quantized_lm_head_candidates(
     QuantFormat format, const void* packed_weights,
     const float* hidden_states, const float* bias, const int* candidate_ids,
@@ -139,6 +221,51 @@ Status quantized_lm_head_candidates(
                         rows, vocab, hidden);
   if (status != Status::kOk) return status;
   add_bias(logits.data(), bias, rows, vocab);
+  for (long long row = 0; row < rows; ++row) {
+    if (offsets[row] > offsets[row + 1] ||
+        offsets[row + 1] - offsets[row] < top_k) {
+      return Status::kInvalidArgument;
+    }
+    std::vector<int> ids;
+    for (long long item = offsets[row]; item < offsets[row + 1]; ++item) {
+      if (candidate_ids[item] < 0 || candidate_ids[item] >= vocab ||
+          std::find(ids.begin(), ids.end(), candidate_ids[item]) != ids.end()) {
+        return Status::kInvalidArgument;
+      }
+      ids.push_back(candidate_ids[item]);
+    }
+    const float* row_logits = logits.data() + row * vocab;
+    const double lse = logsumexp_selected(row_logits, ids);
+    top_ids(row_logits, &ids, top_k);
+    for (int item = 0; item < top_k; ++item) {
+      token_ids[row * top_k + item] = ids[item];
+      log_probabilities[row * top_k + item] =
+          static_cast<float>(row_logits[ids[item]] - lse);
+    }
+  }
+  return Status::kOk;
+}
+
+Status lm_head_candidates(
+    const float* hidden_states, const float* weights, const float* bias,
+    const int* candidate_ids, const long long* offsets, int* token_ids,
+    float* log_probabilities, long long rows, long long vocab,
+    long long hidden, long long candidates, int top_k) {
+  if (!detail::valid_product({rows, vocab, hidden}) || candidates < 0 ||
+      top_k <= 0) {
+    return Status::kInvalidShape;
+  }
+  if (!detail::all_nonnull(hidden_states, weights, candidate_ids, offsets,
+                           token_ids, log_probabilities)) {
+    return Status::kInvalidArgument;
+  }
+  if (offsets[0] != 0 || offsets[rows] != candidates) {
+    return Status::kInvalidArgument;
+  }
+  std::vector<float> logits(static_cast<std::size_t>(rows * vocab));
+  Status status = dense_logits(hidden_states, weights, bias, logits.data(),
+                               rows, vocab, hidden);
+  if (status != Status::kOk) return status;
   for (long long row = 0; row < rows; ++row) {
     if (offsets[row] > offsets[row + 1] ||
         offsets[row + 1] - offsets[row] < top_k) {

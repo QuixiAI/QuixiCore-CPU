@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 #include "quixicore_cpu/status.h"
 
@@ -69,6 +70,16 @@ Status qgemv_unpack(QuantFormat format, const void* packed, long long n,
 // activation-quantizing experiments are deliberately not selectable here.
 Status qgemv(QuantFormat format, const void* packed, const float* x, float* y,
              long long n, long long k);
+
+// XPU-style logical split layouts: adjacent E2M1 nibbles in packed_weights,
+// row-major scale bytes, and f32 activations/output. MXFP4 uses one E8M0 scale
+// per 32 values; NVFP4 uses one E4M3 scale per 16 plus a tensor scale.
+Status mxfp4_gemv(const std::uint8_t* packed_weights,
+                  const std::uint8_t* scale_codes, const float* x, float* y,
+                  long long n, long long k);
+Status nvfp4_gemv(const std::uint8_t* packed_weights,
+                  const std::uint8_t* scale_codes, float global_scale,
+                  const float* x, float* y, long long n, long long k);
 
 // Fused projection compositions matching the Metal decode seams.
 Status qgemv_up_gate(QuantFormat format, const void* packed_up,

@@ -23,6 +23,7 @@ performance claim must add a focused optimization entry here.
 
 | Date | Kernel | Dtype / Format | Shape Set | Target | Baseline | Candidate | Decision | Evidence |
 |---|---|---|---|---|---:|---:|---|---|
+| 2026-07-22 | MXFP8 logical-scale GEMM | E4M3 / E8M0 | M16 N128 K256 G32 | portable table-decoded reference, 1/6 threads | direct decoder 1.6688 / 0.3660 ms | lookup decoder 0.4608 / 0.1229 ms | keep lookup; 3.62x/2.98x faster, still below predecoded dense | `perf/results/2026-07-22/sibling-entrypoints-{final,lookup}-t{1,6}/` |
 | 2026-07-22 | fused RMSNorm-add + dynamic quantization | f32 / group int8 | R512 H4096 G128 | portable fused reference, 1/6 threads | 3.2327 / 1.2658 ms | 3.2725 / 1.2906 ms | keep semantic fusion; 1.2-2.0% allocation cost, no speedup claim | `perf/results/2026-07-22/ported-ops-final-{t1,t6}/` |
 | 2026-07-22 | q4_0 qgemv + q4_0/q8_0 qgemv_w8a8 | q4_0/q8_0, f32/int8 activation | quant_matmul m=1 N4096 K4096 | portable refs + aarch64 DotProd, 6 threads | q8 W8A8 ref 0.7394 ms | q8 W8A8 DotProd 0.1386 ms | keep public routes; q4 references are correctness anchors, q8 DotProd is 5.33x | `perf/results/2026-07-22/qgemv-formats-final-t6-fixed/` |
 | 2026-07-22 | sibling semantic port batch | f32 / q8_0 | five representative quick shapes | aarch64 portable + existing NEON q8_0 route, 1/6 threads | scalar/decomposed 0.8276-31.7397 ms | 0.1520-3.8159 ms | keep portable candidates and parallel routes; no new ISA or family-wide support claim | `perf/results/2026-07-22/all-kernels-final-{t1,t6}/` |
@@ -32,6 +33,53 @@ performance claim must add a focused optimization entry here.
 | 2026-07-07 | rms_norm | f32 | decode_small (R1-R4, H2048/H4096) + R512 stress | aarch64 NEON | 2.26 us | 0.52 us | keep neon variant (4.3-4.6x over ref) | `perf/results/2026-07-07/024347-quick/` |
 | 2026-07-07 | quant_gemv | q8_0 | quant_matmul m=1 (4096x4096, 8192x8192, 16384x4096) | aarch64 NEON DotProd | 4.314 ms | 0.301 ms | keep dotprod variant (14.4x, 51% of DRAM roofline) | `perf/results/2026-07-07/023619-quick/` |
 | 2026-07-07 | quant_gemv | q8_0 | quant_matmul m=1 (4096x4096, 8192x8192, 16384x4096) | aarch64 baseline flags | 4.319 ms | 4.441 ms | reject multi-acc candidate; keep plain loop as ref | `perf/results/2026-07-07/022305-quick/` |
+
+## 2026-07-22: MXFP8/NVFP4 and final sibling entry points
+
+Status: candidate portable references.
+
+Current implementation: the final sibling audit adds logical-layout MXFP8 and
+NVFP4 producers/GEMMs, raw E2M1 packing, split-layout MXFP4/NVFP4 GEMV,
+FP8-output attention-state merging, named FP8/WNA16/NVFP4 MoE paths, explicit
+attention stages, serving metadata adapters, and the remaining named
+projection/norm/SSD routes. Accelerator-only scale swizzles are intentionally
+replaced by row-major CPU scale tables. No optimized dtype or ISA tier is
+claimed.
+
+Optimization experiment: the first MXFP8 GEMM decoded every E4M3 operand with
+the generic arithmetic converter. The retained candidate uses one immutable
+256-entry E4M3 decode table; accumulation and public semantics are unchanged.
+The benchmark compares the quantized path with the same matrices decoded once
+and passed to `dense_gemm`.
+
+| threads | direct decode ms (CV; p20-p80) | lookup decode ms (CV; p20-p80) | predecoded dense ms | lookup speedup |
+|---:|---:|---:|---:|---:|
+| 1 | 1.668820 (0.0322; 1.616028-1.672236) | 0.460790 (0.0012; 0.460216-0.461152) | 0.275678 | 3.62x |
+| 6 | 0.365973 (0.0081; 0.363771-0.368289) | 0.122948 (0.0126; 0.121838-0.123981) | 0.085398 | 2.98x |
+
+Correctness: the MXFP8 benchmark agrees exactly with GEMM over independently
+dequantized operands. Focused tests additionally reconstruct NVFP4 GEMM,
+MXFP4/NVFP4 GEMV, FP4 packing, all three quantized MoE layouts, and FP8 state
+merge. Release, ASan+UBSan+float-cast-overflow, and x86_64/Rosetta CTest each
+pass 19/19.
+
+Decision: keep the lookup decoder. It removes most portable conversion cost
+but remains 1.67x/1.44x slower than predecoded dense at one/six threads, so no
+performance improvement over dense GEMM is claimed. Native SIMD decode and
+packed microkernels remain future optimization work.
+
+- Hardware: Apple M5 Max, 18 physical/logical cores (6 performance, 12
+  efficiency), 128 GB; aarch64 NEON.
+- OS/toolchain: macOS 26.5.2; Apple Clang 21.0.0
+  (`clang-2100.1.1.101`); CMake Release.
+- Shape/format: M16 N128 K256, 32-value MX groups, E4M3 codes, logical E8M0
+  power-of-two scales, f32 output.
+- Settings: one or six threads, OS-default affinity/frequency, 5 warmups,
+  30 timed samples, 5 ms minimum sample time.
+- Command: `quixicore_cpu_bench --preset quick --kernel ported_ops --threads
+  {1,6} --warmup 5 --iters 30 --min-sample-ms 5`.
+- Working-tree label: `d1343ce-dirty`.
+- Raw results: `perf/results/2026-07-22/sibling-entrypoints-{final,lookup}-t{1,6}/`.
 
 ## 2026-07-22: extended sibling semantic port completion
 

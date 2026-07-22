@@ -101,6 +101,22 @@ Status mamba2_backward(const float* c, const float* b, const float* x,
   return Status::kOk;
 }
 
+Status ssd_chunked(const float* c, const float* b, const float* x,
+                   const float* cumulative_log, float* y, long long batch,
+                   long long heads, long long sequence, long long dim) {
+  return mamba2(c, b, x, cumulative_log, y, batch, heads, sequence, dim);
+}
+
+Status ssd_chunked_backward(
+    const float* c, const float* b, const float* x,
+    const float* cumulative_log, const float* grad_y, float* grad_c,
+    float* grad_b, float* grad_x, float* grad_cumulative_log,
+    long long batch, long long heads, long long sequence, long long dim) {
+  return mamba2_backward(c, b, x, cumulative_log, grad_y, grad_c, grad_b,
+                         grad_x, grad_cumulative_log, batch, heads, sequence,
+                         dim);
+}
+
 Status ssd_decode(const float* state, const float* alpha, const float* x,
                   const float* k, const float* q, float* y, float* next_state,
                   long long batch, long long heads, long long dim) {

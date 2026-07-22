@@ -146,6 +146,50 @@ Status gemm_gate_residual(const float* x, const float* weight,
   return Status::kOk;
 }
 
+Status flux_gelu(const float* x, const float* weight, const float* bias,
+                 float* y, long long rows, long long output_dim,
+                 long long input_dim, GeluApprox approx) {
+  Status status = dense_gemm(x, weight, y, rows, output_dim, input_dim);
+  if (status != Status::kOk) return status;
+  threading::parallel_ranges(rows * output_dim, 4096,
+                             [&](long long begin, long long end, int) {
+    const LinearActivation activation =
+        approx == GeluApprox::kErf ? LinearActivation::kGeluErf
+                                   : LinearActivation::kGeluTanh;
+    for (long long index = begin; index < end; ++index) {
+      y[index] = activate(y[index] +
+                              (bias == nullptr ? 0.0f
+                                               : bias[index % output_dim]),
+                          activation);
+    }
+  });
+  return Status::kOk;
+}
+
+Status flux_gate(const float* x, const float* weight, const float* bias,
+                 const float* gate, const float* residual, float* y,
+                 long long rows, long long output_dim,
+                 long long input_dim) {
+  return gemm_gate_residual(x, weight, bias, gate, residual, y, rows,
+                            output_dim, input_dim);
+}
+
+Status decode_linear(const float* x, const float* weight, const float* bias,
+                     float* y, long long rows, long long input_dim,
+                     long long output_dim, bool use_gelu) {
+  return linear_epilogue(
+      x, weight, bias, nullptr, y, rows, input_dim, output_dim,
+      use_gelu ? LinearActivation::kGeluTanh : LinearActivation::kNone);
+}
+
+Status decode_linear_residual(
+    const float* x, const float* weight, const float* bias,
+    const float* residual, float* y, long long rows, long long input_dim,
+    long long output_dim) {
+  return linear_epilogue(x, weight, bias, residual, y, rows, input_dim,
+                         output_dim, LinearActivation::kNone);
+}
+
 Status complex_gemm(const float* a_real, const float* a_imag,
                     const float* b_real, const float* b_imag,
                     float* c_real, float* c_imag, long long m, long long n,

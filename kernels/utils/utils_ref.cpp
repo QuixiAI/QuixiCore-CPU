@@ -41,6 +41,12 @@ Status dropout(const float* x, float* y, long long count, float probability,
   return Status::kOk;
 }
 
+Status dropout_backward(const float* grad_out, float* grad_in,
+                        long long count, float probability,
+                        std::uint32_t seed) {
+  return dropout(grad_out, grad_in, count, probability, seed);
+}
+
 Status cross_entropy(const float* logits, const int* target, float* loss,
                      long long rows, long long vocab) {
   if (!detail::valid_product({rows, vocab})) {
@@ -105,6 +111,49 @@ Status hadamard(const float* x, float* y, long long rows, long long dim) {
         }
       }
       std::copy(buffer.begin(), buffer.end(), y + row * dim);
+    }
+  });
+  return Status::kOk;
+}
+
+Status fwht_rotate(const float* x, const float* sign, float* y,
+                   long long rows, long long dim, bool inverse) {
+  if (!detail::valid_product({rows, dim}) ||
+      (static_cast<unsigned long long>(dim) &
+       (static_cast<unsigned long long>(dim) - 1ULL)) != 0) {
+    return Status::kInvalidShape;
+  }
+  if (!detail::all_nonnull(x, sign, y)) return Status::kInvalidArgument;
+  for (long long column = 0; column < dim; ++column) {
+    if (!std::isfinite(sign[column])) return Status::kInvalidArgument;
+  }
+  const float normalization =
+      static_cast<float>(1.0 / std::sqrt(static_cast<double>(dim)));
+  threading::parallel_ranges(rows, 1,
+                             [&](long long begin, long long end, int) {
+    std::vector<float> buffer(static_cast<std::size_t>(dim));
+    for (long long row = begin; row < end; ++row) {
+      for (long long column = 0; column < dim; ++column) {
+        buffer[static_cast<std::size_t>(column)] =
+            x[row * dim + column] * (inverse ? 1.0f : sign[column]);
+      }
+      for (long long stride = 1; stride < dim; stride *= 2) {
+        for (long long block = 0; block < dim; block += 2 * stride) {
+          for (long long i = 0; i < stride; ++i) {
+            const float first = buffer[static_cast<std::size_t>(block + i)];
+            const float second =
+                buffer[static_cast<std::size_t>(block + stride + i)];
+            buffer[static_cast<std::size_t>(block + i)] = first + second;
+            buffer[static_cast<std::size_t>(block + stride + i)] =
+                first - second;
+          }
+        }
+      }
+      for (long long column = 0; column < dim; ++column) {
+        y[row * dim + column] =
+            buffer[static_cast<std::size_t>(column)] * normalization *
+            (inverse ? sign[column] : 1.0f);
+      }
     }
   });
   return Status::kOk;

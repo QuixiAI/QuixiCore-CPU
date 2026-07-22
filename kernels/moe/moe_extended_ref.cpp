@@ -8,7 +8,9 @@
 #include <vector>
 
 #include "kernels/common/validation.h"
+#include "quixicore_cpu/qgemm.h"
 #include "quixicore_cpu/qgemv.h"
+#include "quixicore_cpu/quantization.h"
 #include "src/threading/thread_pool.h"
 
 namespace quixicore_cpu {
@@ -109,6 +111,17 @@ Status moe_route_grouped(const float* router_logits, const float* bias,
   return Status::kOk;
 }
 
+Status moe_route_scored(const float* router_logits, int* expert_ids,
+                        float* expert_weights, long long tokens,
+                        long long experts, int top_k, int mode,
+                        bool renormalize, float scaling) {
+  if (mode < 0 || mode > 1) return Status::kInvalidArgument;
+  return moe_route_grouped(
+      router_logits, nullptr, expert_ids, expert_weights, tokens, experts,
+      top_k, 1, 1, renormalize, scaling,
+      mode == 0 ? MoeScoring::kSigmoid : MoeScoring::kSqrtSoftplus);
+}
+
 Status moe_permute(const int* expert_ids, int* sorted_rows, int* offsets,
                    int* inverse, long long tokens, long long experts,
                    int top_k) {
@@ -182,6 +195,78 @@ Status moe_pad_schedule(const int* sorted_rows, const int* offsets,
         std::upper_bound(offsets, offsets + experts + 1, compact) - offsets - 1;
     inverse_padded[route] =
         padded_offsets[expert] + compact - offsets[expert];
+  }
+  return Status::kOk;
+}
+
+Status moe_lora_align(
+    const int* topk_ids, const int* token_lora_mapping,
+    const int* lora_ids, const std::uint8_t* adapter_enabled,
+    int* sorted_token_ids, int* expert_ids, int* tokens_post_pad,
+    long long tokens, long long max_loras, long long num_experts,
+    int top_k, int block_size, long long sorted_capacity_per_lora,
+    long long expert_capacity_per_lora) {
+  if (!detail::valid_product({tokens, max_loras, num_experts, top_k}) ||
+      block_size <= 0 || sorted_capacity_per_lora <= 0 ||
+      expert_capacity_per_lora <= 0) {
+    return Status::kInvalidShape;
+  }
+  if (!detail::all_nonnull(topk_ids, token_lora_mapping, lora_ids,
+                           adapter_enabled, sorted_token_ids, expert_ids,
+                           tokens_post_pad)) {
+    return Status::kInvalidArgument;
+  }
+  const long long assignments = tokens * top_k;
+  std::fill_n(sorted_token_ids, max_loras * sorted_capacity_per_lora,
+              static_cast<int>(assignments));
+  std::fill_n(expert_ids, max_loras * expert_capacity_per_lora, -1);
+  std::fill_n(tokens_post_pad, max_loras, 0);
+  std::vector<std::uint8_t> seen_lora(static_cast<std::size_t>(max_loras), 0);
+  for (long long item = 0; item < max_loras; ++item) {
+    const int lora = lora_ids[item];
+    if (lora < 0) continue;
+    if (lora >= max_loras || seen_lora[static_cast<std::size_t>(lora)]++) {
+      return Status::kInvalidArgument;
+    }
+    if (adapter_enabled[lora] == 0) continue;
+    std::vector<int> counts(static_cast<std::size_t>(num_experts), 0);
+    for (long long route = 0; route < assignments; ++route) {
+      if (token_lora_mapping[route / top_k] != lora) continue;
+      if (topk_ids[route] >= 0 && topk_ids[route] < num_experts) {
+        ++counts[static_cast<std::size_t>(topk_ids[route])];
+      }
+    }
+    std::vector<int> offsets(static_cast<std::size_t>(num_experts + 1), 0);
+    for (long long expert = 0; expert < num_experts; ++expert) {
+      offsets[static_cast<std::size_t>(expert + 1)] =
+          offsets[static_cast<std::size_t>(expert)] +
+          (counts[static_cast<std::size_t>(expert)] + block_size - 1) /
+              block_size * block_size;
+    }
+    const int padded = offsets.back();
+    if (padded > sorted_capacity_per_lora ||
+        (padded + block_size - 1) / block_size >
+            expert_capacity_per_lora) {
+      return Status::kInvalidShape;
+    }
+    tokens_post_pad[lora] = padded;
+    std::vector<int> cursor(offsets.begin(), offsets.end() - 1);
+    int* sorted = sorted_token_ids + lora * sorted_capacity_per_lora;
+    int* tile_expert = expert_ids + lora * expert_capacity_per_lora;
+    for (long long route = 0; route < assignments; ++route) {
+      if (token_lora_mapping[route / top_k] != lora) continue;
+      const int expert = topk_ids[route];
+      if (expert < 0 || expert >= num_experts) continue;
+      sorted[cursor[static_cast<std::size_t>(expert)]++] =
+          static_cast<int>(route);
+    }
+    for (long long expert = 0; expert < num_experts; ++expert) {
+      for (int row = offsets[static_cast<std::size_t>(expert)];
+           row < offsets[static_cast<std::size_t>(expert + 1)];
+           row += block_size) {
+        tile_expert[row / block_size] = static_cast<int>(expert);
+      }
+    }
   }
   return Status::kOk;
 }
@@ -511,6 +596,190 @@ Status moe_grouped_qswiglu(
       }
     }
   }
+  return Status::kOk;
+}
+
+Status moe_gemm_fp8(const float* x, const std::uint8_t* weight_codes,
+                    const float* weight_scales, const int* expert_ids,
+                    float* out, long long rows, long long experts,
+                    long long input_dim, long long output_dim) {
+  if (!detail::valid_product({rows, experts, input_dim, output_dim})) {
+    return Status::kInvalidShape;
+  }
+  if (!detail::all_nonnull(x, weight_codes, weight_scales, expert_ids, out)) {
+    return Status::kInvalidArgument;
+  }
+  for (long long row = 0; row < rows; ++row) {
+    if (expert_ids[row] < -1 || expert_ids[row] >= experts) {
+      return Status::kInvalidArgument;
+    }
+  }
+  for (long long i = 0; i < experts * output_dim; ++i) {
+    if (!std::isfinite(weight_scales[i])) return Status::kInvalidArgument;
+  }
+  threading::parallel_ranges(rows * output_dim, 16,
+                             [&](long long begin, long long end, int) {
+    for (long long item = begin; item < end; ++item) {
+      const long long row = item / output_dim;
+      const long long output = item % output_dim;
+      const int expert = expert_ids[row];
+      if (expert < 0) {
+        out[item] = 0.0f;
+        continue;
+      }
+      const long long weight_row =
+          (static_cast<long long>(expert) * output_dim + output) * input_dim;
+      double sum = 0.0;
+      for (long long input = 0; input < input_dim; ++input) {
+        sum += x[row * input_dim + input] *
+               float8_decode(weight_codes[weight_row + input],
+                             Float8Format::kE4M3FN);
+      }
+      out[item] = static_cast<float>(
+          sum * weight_scales[static_cast<long long>(expert) * output_dim +
+                              output]);
+    }
+  });
+  return Status::kOk;
+}
+
+Status moe_gemm_wna16(const float* x, const std::uint32_t* packed_weights,
+                      const float* scales,
+                      const std::uint8_t* zero_points,
+                      const int* expert_ids, float* out, long long rows,
+                      long long experts, long long input_dim,
+                      long long output_dim, long long group_size, int bits) {
+  if (!detail::valid_product({rows, experts, input_dim, output_dim,
+                              group_size}) ||
+      input_dim % group_size != 0 || (bits != 4 && bits != 8) ||
+      input_dim % (32 / bits) != 0) {
+    return Status::kInvalidShape;
+  }
+  if (!detail::all_nonnull(x, packed_weights, scales, expert_ids, out)) {
+    return Status::kInvalidArgument;
+  }
+  for (long long row = 0; row < rows; ++row) {
+    if (expert_ids[row] < -1 || expert_ids[row] >= experts) {
+      return Status::kInvalidArgument;
+    }
+  }
+  const int pack = 32 / bits;
+  const long long groups = input_dim / group_size;
+  const long long packed_k = input_dim / pack;
+  for (long long i = 0; i < experts * output_dim * groups; ++i) {
+    if (!std::isfinite(scales[i])) return Status::kInvalidArgument;
+  }
+  threading::parallel_ranges(rows * output_dim, 16,
+                             [&](long long begin, long long end, int) {
+    for (long long item = begin; item < end; ++item) {
+      const long long row = item / output_dim;
+      const long long output = item % output_dim;
+      const int expert = expert_ids[row];
+      if (expert < 0) {
+        out[item] = 0.0f;
+        continue;
+      }
+      const long long weight_base =
+          (static_cast<long long>(expert) * output_dim + output) * packed_k;
+      double sum = 0.0;
+      for (long long input = 0; input < input_dim; ++input) {
+        const int inner = static_cast<int>(input % pack);
+        const int local =
+            bits == 4
+                ? (inner < 4 ? 2 * inner : 2 * (inner - 4) + 1)
+                : (inner < 2 ? 2 * inner : 2 * (inner - 2) + 1);
+        const std::uint32_t packed =
+            packed_weights[weight_base + input / pack];
+        const unsigned mask = bits == 4 ? 0x0fu : 0xffu;
+        const float code = static_cast<float>((packed >> (local * bits)) & mask);
+        const long long group = input / group_size;
+        const long long scale_index =
+            (static_cast<long long>(expert) * output_dim + output) * groups +
+            group;
+        float zero = bits == 4 ? 8.0f : 128.0f;
+        if (zero_points != nullptr) {
+          if (bits == 4) {
+            const long long zero_base =
+                static_cast<long long>(expert) * ((output_dim + 1) / 2) *
+                groups;
+            const std::uint8_t byte =
+                zero_points[zero_base + (output / 2) * groups + group];
+            zero = static_cast<float>((byte >> (4 * (output & 1))) & 15);
+          } else {
+            zero = zero_points[scale_index];
+          }
+        }
+        sum += x[row * input_dim + input] *
+               (code - zero) * scales[scale_index];
+      }
+      out[item] = static_cast<float>(sum);
+    }
+  });
+  return Status::kOk;
+}
+
+Status moe_gemm_nvfp4(
+    const std::uint8_t* activation_codes,
+    const std::uint8_t* weight_codes,
+    const std::uint8_t* activation_scale_codes,
+    const std::uint8_t* weight_scale_codes, const float* expert_scale,
+    const int* expert_ids, float* out, long long rows, long long experts,
+    long long input_dim, long long output_dim) {
+  if (!detail::valid_product({rows, experts, input_dim, output_dim}) ||
+      input_dim % 16 != 0) {
+    return Status::kInvalidShape;
+  }
+  if (!detail::all_nonnull(activation_codes, weight_codes,
+                           activation_scale_codes, weight_scale_codes,
+                           expert_scale, expert_ids, out)) {
+    return Status::kInvalidArgument;
+  }
+  for (long long row = 0; row < rows; ++row) {
+    if (expert_ids[row] < -1 || expert_ids[row] >= experts) {
+      return Status::kInvalidArgument;
+    }
+  }
+  for (long long expert = 0; expert < experts; ++expert) {
+    if (!std::isfinite(expert_scale[expert]) || expert_scale[expert] < 0.0f) {
+      return Status::kInvalidArgument;
+    }
+  }
+  const long long groups = input_dim / 16;
+  for (long long i = 0; i < rows * groups; ++i) {
+    if (!std::isfinite(float8_decode(activation_scale_codes[i],
+                                     Float8Format::kE4M3FN))) {
+      return Status::kInvalidArgument;
+    }
+  }
+  for (long long i = 0; i < experts * output_dim * groups; ++i) {
+    if (!std::isfinite(float8_decode(weight_scale_codes[i],
+                                     Float8Format::kE4M3FN))) {
+      return Status::kInvalidArgument;
+    }
+  }
+  const long long weight_bytes = output_dim * input_dim / 2;
+  const long long weight_scales = output_dim * (input_dim / 16);
+  threading::parallel_ranges(rows, 1, [&](long long begin, long long end, int) {
+    for (long long row = begin; row < end; ++row) {
+      const int expert = expert_ids[row];
+      if (expert < 0) {
+        std::fill_n(out + row * output_dim, output_dim, 0.0f);
+        continue;
+      }
+      const Status status = nvfp4_gemm(
+          activation_codes + row * (input_dim / 2),
+          activation_scale_codes + row * (input_dim / 16), 1.0f,
+          weight_codes + static_cast<long long>(expert) * weight_bytes,
+          weight_scale_codes +
+              static_cast<long long>(expert) * weight_scales,
+          expert_scale[expert], out + row * output_dim, 1, output_dim,
+          input_dim);
+      if (status != Status::kOk) {
+        std::fill_n(out + row * output_dim, output_dim,
+                    std::numeric_limits<float>::quiet_NaN());
+      }
+    }
+  });
   return Status::kOk;
 }
 

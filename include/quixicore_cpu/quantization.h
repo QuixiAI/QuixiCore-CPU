@@ -13,6 +13,17 @@ enum class Float8Format { kE4M3FN, kE5M2 };
 std::uint8_t float8_encode(float value, Float8Format format);
 float float8_decode(std::uint8_t code, Float8Format format);
 
+// Portable FP4 E2M1 conversion. The low three bits select
+// {0,.5,1,1.5,2,3,4,6}; bit three is the sign. Encoding is saturating
+// round-to-nearest-even. Packed conversion stores the first value in the low
+// nibble and requires an even element count.
+std::uint8_t fp4_e2m1_encode(float value);
+float fp4_e2m1_decode(std::uint8_t code);
+Status fp32_to_fp4x2(const float* x, std::uint8_t* packed,
+                     long long count);
+Status fp4x2_to_fp32(const std::uint8_t* packed, float* out,
+                     long long count);
+
 // Dynamic symmetric quantization over contiguous groups in each row. A
 // group_size of zero means one group per row. scales is [rows,dim/group_size].
 Status quantize_int8(const float* x, std::int8_t* codes, float* scales,
@@ -52,6 +63,18 @@ Status dequantize_float8(const std::uint8_t* codes, const float* scales,
                          float* out, long long rows, long long dim,
                          long long group_size = 0,
                          Float8Format format = Float8Format::kE4M3FN);
+
+// Logical (unswizzled) microscaling layouts used by the CPU backend.
+// MXFP8 uses E4M3 codes and one power-of-two f32 scale per 32 values.
+Status mxfp8_quantize(const float* x, std::uint8_t* codes, float* scales,
+                      long long rows, long long dim);
+
+// NVFP4 stores adjacent E2M1 values in one byte, one E4M3 scale code per 16
+// values, and one tensor-wide f32 scale. scale_2d shares each local scale over
+// a group of up to 16 adjacent rows, matching the sibling 2D quantizer.
+Status nvfp4_quantize(const float* x, std::uint8_t* packed,
+                      std::uint8_t* scale_codes, float* global_scale,
+                      long long rows, long long dim, bool scale_2d = false);
 
 // Fake-quantized results are reconstructed in f32 from the exact emitted codes.
 Status fake_quant_int8(const float* x, float* out, std::int8_t* codes,
@@ -98,6 +121,16 @@ Status layer_norm_add_quant_float8(
     const float* bias, std::uint8_t* codes, float* residual_out,
     float* scales, long long rows, long long hidden, float eps = 1e-5f,
     long long group_size = 0, bool power_of_two_scale = false,
+    Float8Format format = Float8Format::kE4M3FN);
+Status rms_norm_add_quant_float8_static(
+    const float* x, const float* residual, const float* weight,
+    std::uint8_t* codes, float* residual_out, long long rows,
+    long long hidden, float scale, float eps = 1e-5f,
+    Float8Format format = Float8Format::kE4M3FN);
+Status layer_norm_add_quant_float8_static(
+    const float* x, const float* residual, const float* weight,
+    const float* bias, std::uint8_t* codes, float* residual_out,
+    long long rows, long long hidden, float scale, float eps = 1e-5f,
     Float8Format format = Float8Format::kE4M3FN);
 
 // BitNet blocks are byte-compatible {fp16 scale, 8 packed 2-bit codes}; K and

@@ -25,17 +25,17 @@ coverage remains deliberately narrower and is indexed in `perf/`.
 | Activations and elementwise | `gelu`, `gelu_backward`, `silu`, `glu`, `glu_backward`, `add`, `softmax` | Erf/tanh GELU and SwiGLU/GeGLU/ReGLU/plain GLU modes are explicit. GPU elementwise launch variants collapse by operation. |
 | Norms and norm-quant | `rms_norm`, `layer_norm`, both backward paths, add/residual seams, residual-next, int8/FP8 norm-add quantization | Metal split/fused backward symbols produce one combined CPU result. AddNorm FP8 token/group variants use the generic group-size API. |
 | Dense matmul and projections | `dense_gemm`, `dense_gemm_ex`, `linear_epilogue`, `decode_swiglu`, `gemm_gate_residual`, `complex_gemm`, `grouped_gemm` | CUDA/ROCm architecture, transpose, tile, staged, Flux, and educational variants collapse to these mathematical operations and epilogues. |
-| Quantized matmul | `qgemv`, W8A8 GEMV, fused up/gate/QKV GEMV, `qgemm`, backward-input, epilogues, int8/AZP, BitNet W2A8, FP8 scaled/block-scale, act-order, and quantized LM-head operations | Packed weight decode is shared across GEMV/GEMM/MoE/embedding. `qgemv_unpack` represents full-weight dequantization. |
-| Dense and variable attention | dense/GQA attention forward/backward, window and biased attention, varlen attention, Q/K norm+RoPE, table RoPE | Causal/noncausal, MHA/GQA, Swin, multiwarp, and GPU head-dimension variants share these entries. Prep/DQ/DKV and worklist/pack/regather stages are combined public results or exposed metadata helpers. |
-| Decode attention and caches | paged, advanced, staged-equivalent, xcache-layout, FP8 paged, f32/FP8-prefix cascade, dense/sparse FP8 MLA, quantized dense attention, RoPE+KV insert | Partition/reduce and direct/staged routes are CPU scheduling details. `paged_attention_xcache` adapts the sibling split/transposed cache layout. |
+| Quantized matmul | `qgemv`, W8A8 GEMV, fused up/gate/QKV GEMV, `qgemm`, backward-input, epilogues, int8/AZP, BitNet W2A8, FP8 scaled/block-scale, act-order, MXFP8/NVFP4 quantize+GEMM, split-layout MXFP4/NVFP4 GEMV, raw FP4x2 conversion, and quantized LM-head operations | Packed weight decode is shared across GEMV/GEMM/MoE/embedding. Accelerator scale swizzles become logical row-major scale tables at the CPU boundary. |
+| Dense and variable attention | dense/GQA attention forward/backward, explicit prep/DQ/DKV stages, forward LSE/sinks/softcap, window and biased/Swin attention, varlen attention, Q/K norm+RoPE, table RoPE | Causal/noncausal, MHA/GQA, multiwarp, and GPU head-dimension variants share these entries. Worklist/pack/regather symbols remain CPU scheduling details. |
+| Decode attention and caches | paged, advanced, staged-equivalent, xcache-layout, FP8 paged, f32/FP8-prefix cascade, f32/FP8-output state merge, dense/sparse FP8 MLA, fused cache decode, quantized dense attention, RoPE+KV insert | Partition/reduce and direct/staged routes are CPU scheduling details. `paged_attention_xcache` adapts the sibling split/transposed cache layout. |
 | Sampling and logit processing | argmax/categorical/top-k/top-p/min-p/typical-p; token/bad-word/repetition processors; top-k/top-p renorm; quadratic, nsigma, top-a, epsilon, eta, XTC, skew, no-repeat-ngram, and DRY transforms | Partial/reduction symbols in the LM-head and sampler implementations collapse into final selection APIs. |
 | Beam and speculative decode | beam step/remap/copy metadata; linear/tree/ragged rejection verification; recovered-token sampling; compact/KV metadata; EAGLE metadata | Padded and ragged host-observable results are explicit. Tree-building and EAGLE launch stages remain separate where callers consume their metadata. |
-| Embedding and multimodal serving | lookup/backward, multimodal source-map build/merge, pooled RMS-L2, quantized embedding and embedding-bag | Atomic and sorted embedding-backward variants share the deterministic CPU accumulation. |
-| MoE | top-k/grouped routing, permute/padded schedule, gather/finalize and backward, grouped GEMM/SwiGLU and backward, quantized grouped GEMM/SwiGLU | Rectangular, padded, quantized, and fused GPU launch variants map to shape parameters and epilogue flags. Distributed MoE dispatch is `all_to_all` plus the same grouped operation. |
+| Embedding and multimodal serving | lookup/backward, explicit sorted backward, multimodal source-map build/merge, pooled RMS-L2, quantized embedding and embedding-bag | Atomic and sorted GPU accumulation paths produce the same deterministic CPU result. |
+| MoE | top-k/grouped/scored routing, permute/padded and per-LoRA schedules, gather/finalize and backward, grouped GEMM/SwiGLU and backward, generic packed grouped GEMM/SwiGLU, named FP8/WNA16/NVFP4 grouped GEMMs | Rectangular, padded, quantized, and fused GPU launch variants map to row-shaped expert ids and logical metadata. Distributed MoE dispatch is `all_to_all` plus the same grouped operation. |
 | Linear attention | normalized/unnormalized, causal, decayed, Based, Hedgehog, and GatedDeltaNet recurrence | CUDA/ROCm chunk KV/scan/output phases are combined in the final recurrence/attention API. |
 | State-space and convolution | selective scan, stateful varlen/APC scan, Mamba2 forward/backward, SSD decode, direct circular `fft_convolution` | SSD chunk phases and row/column backward launches collapse into full results. The direct convolution is the portable correctness oracle for FFT implementations. |
-| Training and utility kernels | cross entropy forward/backward, dense/top-k KD-KL and fused KD+CE, dropout, Hadamard, packbits/segment-packbits/permute/tau-tail, masked AdamW | Layout/bit utilities grouped by Metal's `Marginal` primitive are explicit CPU functions. |
-| Vision and sparse serving | patch-merge LayerNorm, space-to-depth norm+linear, edge MLP, indexer quant/gather, MInference block mask | Swin attention itself maps to biased attention. |
+| Training and utility kernels | cross entropy forward/backward, dense/top-k KD-KL and fused KD+CE, deterministic dropout forward/backward, Hadamard/FWHT rotate, packbits/segment-packbits/permute/tau-tail, masked AdamW | Layout/bit utilities grouped by Metal's `Marginal` primitive are explicit CPU functions. |
+| Vision and sparse serving | patch-merge LayerNorm, space-to-depth norm+linear, edge MLP, indexer quant/paged gather, vertical/slash sparse conversion, MInference block mask | Packed D32 Swin attention is an explicit adapter over biased attention semantics. |
 | Collectives and parallel composites | all-reduce, all-gather, reduce-scatter, all-to-all, broadcast, reduce, GEMM+AR, AG+GEMM, GEMM+RS | Host-reference buffers make every rank explicit. Ring/Ulysses attention and MoE dispatch are compositions of these collectives with attention or grouped MoE; network transport and overlap strategy are not CPU kernel semantics. |
 
 ## Quantization formats
@@ -50,7 +50,8 @@ sibling quantization trees:
   NVFP4, MXFP4, and both MXFP6 encodings.
 - Runtime quantization: symmetric/asymmetric int8, signed grouped int4,
   per-row/per-group FP8 with optional power-of-two scales, fake quantization,
-  fused SiLU/gate quantization, ternary statistics, and TurboQuant KV coding.
+  fused SiLU/gate quantization, MXFP8 and NVFP4 producers, raw E2M1 packing,
+  ternary statistics, and TurboQuant KV coding.
 
 `qgemv_pack` deliberately authors only q8_0, q4_0, and TQ2_0. The other
 entries consume sibling/GGUF packed bytes and have exact decoder coverage;
@@ -61,11 +62,14 @@ provide.
 
 | Sibling implementation symbols | CPU representation |
 |---|---|
-| `AttnBwdPrep`, `AttnBwdDQ`, `AttnBwdDKV` | one `attention_backward` result |
+| `AttnBwdPrep`, `AttnBwdDQ`, `AttnBwdDKV` | explicit staged calls plus one `attention_backward` convenience result |
 | paged/MLA partition and reduction stages | one paged/MLA decode call |
 | LM-head partial/top-k/top-p/argcat reducers | final LM-head candidate, sample, beam, or constrained call |
 | linear-attention and SSD chunk KV/scan/output phases | final attention/recurrence call |
 | architecture/tile/direct/staged GEMM variants | one dense or quantized GEMM semantic plus explicit epilogue |
+| CUDA `fused_layernorm` and `fused_rotary` launchers | `dropout` + `layer_norm_add`, and `rope_table`, respectively |
+| CUDA `attn_q` and staged paged/MLA launchers | `quantized_attention` or one final paged/MLA decode call |
+| CUDA sampler/beam/EAGLE spelling aliases | the typed sampling, beam-search, speculative, and EAGLE metadata entries |
 | CUDA/ROCm ring or Ulysses attention | collective composition plus `attention` |
 | CUDA/ROCm distributed MoE dispatch | `all_to_all` plus MoE gather/grouped GEMM/finalize |
 | Metal atomic versus sorted embedding backward | deterministic `embedding_backward` |
@@ -75,12 +79,13 @@ provide.
 Correctness is split across the focused executables under
 `tests/correctness/`: the core contract tests plus `extended_ops`,
 `gguf_formats`, `quantization`, `projection_ops`, `parallel_sampling`,
-`serving_metadata`, and `remaining_ops`. These cover known-value or
+`serving_metadata`, `remaining_ops`, and `sibling_entrypoints`. These cover known-value or
 independently decomposed oracles, invalid arguments, quantized byte layouts,
 and the semantic collapses above.
 
 `contract_ops` records representative performance evidence for softmax,
 attention, MoE routing, selective scan, and q8_0 QGEMM. `ported_ops` records a
-focused fused norm-add/int8-quant run against a decomposed baseline. Exact
+focused fused norm-add/int8-quant run and MXFP8 logical-scale GEMM against a
+predecoded dense baseline. Exact
 commands, hardware, medians, variance, and decisions live in
 `perf/optimization_status.md`; this matrix makes no family-wide speed claim.

@@ -379,4 +379,126 @@ Status qk_norm_rope(const float* qkv, const float* q_weight,
   return Status::kOk;
 }
 
+Status qk_norm_rope_split(
+    const float* qkv, const float* q_weight, const float* k_weight,
+    const float* cosine, const float* sine, const int* positions,
+    float* q_out, float* k_out, float* v_out, long long tokens,
+    long long query_heads, long long key_heads, long long value_heads,
+    long long head_dim, long long max_position, float eps,
+    bool interleaved, bool gemma_weight) {
+  const long long total_heads = query_heads + key_heads + value_heads;
+  if (!detail::valid_product({tokens, total_heads, head_dim})) {
+    return Status::kInvalidShape;
+  }
+  if (!detail::all_nonnull(qkv, q_weight, k_weight, cosine, sine, positions,
+                           q_out, k_out, v_out)) {
+    return Status::kInvalidArgument;
+  }
+  std::vector<float> q_adjusted;
+  std::vector<float> k_adjusted;
+  const float* qw = q_weight;
+  const float* kw = k_weight;
+  if (gemma_weight) {
+    q_adjusted.resize(static_cast<std::size_t>(head_dim));
+    k_adjusted.resize(static_cast<std::size_t>(head_dim));
+    for (long long d = 0; d < head_dim; ++d) {
+      q_adjusted[static_cast<std::size_t>(d)] = q_weight[d] + 1.0f;
+      k_adjusted[static_cast<std::size_t>(d)] = k_weight[d] + 1.0f;
+    }
+    qw = q_adjusted.data();
+    kw = k_adjusted.data();
+  }
+  std::vector<float> packed(
+      static_cast<std::size_t>(tokens * total_heads * head_dim));
+  Status status = qk_norm_rope(
+      qkv, qw, kw, cosine, sine, positions, packed.data(), tokens,
+      query_heads, key_heads, value_heads, head_dim, max_position, eps,
+      interleaved);
+  if (status != Status::kOk) return status;
+  for (long long token = 0; token < tokens; ++token) {
+    const float* row = packed.data() + token * total_heads * head_dim;
+    std::copy_n(row, query_heads * head_dim,
+                q_out + token * query_heads * head_dim);
+    std::copy_n(row + query_heads * head_dim, key_heads * head_dim,
+                k_out + token * key_heads * head_dim);
+    std::copy_n(row + (query_heads + key_heads) * head_dim,
+                value_heads * head_dim,
+                v_out + token * value_heads * head_dim);
+  }
+  return Status::kOk;
+}
+
+Status swin_attention_d32(
+    const float* qkv, const float* relative_bias, const float* mask,
+    float* out, long long windows, long long tokens, long long heads,
+    long long windows_per_image) {
+  constexpr long long kHeadDim = 32;
+  if (!detail::valid_product({windows, tokens, heads, kHeadDim}) ||
+      windows_per_image < 0 ||
+      (mask != nullptr && (windows_per_image <= 0 ||
+                           windows % windows_per_image != 0))) {
+    return Status::kInvalidShape;
+  }
+  if (!detail::all_nonnull(qkv, relative_bias, out)) {
+    return Status::kInvalidArgument;
+  }
+  constexpr double kScale = 0.1767766952966369;  // 1/sqrt(32)
+  threading::parallel_ranges(
+      windows * heads * tokens, 1,
+      [&](long long begin, long long end, int) {
+        for (long long item = begin; item < end; ++item) {
+          const long long query_position = item % tokens;
+          const long long head = (item / tokens) % heads;
+          const long long window = item / (tokens * heads);
+          const float* query =
+              qkv + ((((window * tokens + query_position) * 3) * heads +
+                       head) *
+                      kHeadDim);
+          float* destination =
+              out + ((window * tokens + query_position) * heads + head) *
+                        kHeadDim;
+          std::fill_n(destination, kHeadDim, 0.0f);
+          double maximum = -std::numeric_limits<double>::infinity();
+          double denominator = 0.0;
+          const long long mask_window = windows_per_image > 0
+                                            ? window % windows_per_image
+                                            : 0;
+          for (long long key_position = 0; key_position < tokens;
+               ++key_position) {
+            const float* key =
+                qkv + ((((window * tokens + key_position) * 3 + 1) * heads +
+                         head) *
+                        kHeadDim);
+            double score = 0.0;
+            for (long long d = 0; d < kHeadDim; ++d) {
+              score += static_cast<double>(query[d]) * key[d];
+            }
+            score = score * kScale +
+                    relative_bias[(head * tokens + query_position) * tokens +
+                                  key_position];
+            if (mask != nullptr) {
+              score += mask[(mask_window * tokens + query_position) * tokens +
+                            key_position];
+            }
+            const double next_maximum = std::max(maximum, score);
+            const double old_weight = std::exp(maximum - next_maximum);
+            const double new_weight = std::exp(score - next_maximum);
+            denominator = denominator * old_weight + new_weight;
+            const float* value =
+                qkv + ((((window * tokens + key_position) * 3 + 2) * heads +
+                         head) *
+                        kHeadDim);
+            for (long long d = 0; d < kHeadDim; ++d) {
+              destination[d] = static_cast<float>(
+                  destination[d] * old_weight + value[d] * new_weight);
+            }
+            maximum = next_maximum;
+          }
+          const float inverse = static_cast<float>(1.0 / denominator);
+          for (long long d = 0; d < kHeadDim; ++d) destination[d] *= inverse;
+        }
+      });
+  return Status::kOk;
+}
+
 }  // namespace quixicore_cpu

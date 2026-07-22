@@ -86,6 +86,13 @@ Status qgemm_epilogue(QuantFormat format, const void* packed_weights,
   return Status::kOk;
 }
 
+Status qflux_gelu(QuantFormat format, const void* packed_weights,
+                  const float* x, const float* bias, float* y, long long m,
+                  long long n, long long k) {
+  return qgemm_epilogue(format, packed_weights, x, bias, y, m, n, k,
+                        LinearActivation::kGeluTanh);
+}
+
 Status int8_gemm(const std::int8_t* weights, const std::int8_t* x,
                  const float* weight_scale, const float* activation_scale,
                  const std::int32_t* weight_row_sum,
@@ -170,6 +177,40 @@ Status bitnet_int8_gemm(const void* packed_weights, const std::int8_t* x,
     }
   });
   return Status::kOk;
+}
+
+Status qgemm_w8a8(const std::int8_t* weights, const std::int8_t* x,
+                  const float* weight_scale, const float* activation_scale,
+                  float* y, long long m, long long n, long long k) {
+  return int8_gemm(weights, x, weight_scale, activation_scale, nullptr,
+                   nullptr, y, m, n, k, false);
+}
+
+Status qgemm_w8a8_azp(
+    const std::int8_t* weights, const std::int8_t* x,
+    const float* weight_scale, const float* activation_scale,
+    const std::int32_t* weight_row_sum, const int* activation_zero_point,
+    float* y, long long m, long long n, long long k) {
+  return int8_gemm(weights, x, weight_scale, activation_scale, weight_row_sum,
+                   activation_zero_point, y, m, n, k, true);
+}
+
+Status qgemm_w2a8(const void* packed_weights, const std::int8_t* x,
+                  const float* activation_scale, float* y, long long m,
+                  long long n, long long k) {
+  return bitnet_int8_gemm(packed_weights, x, activation_scale, y, m, n, k);
+}
+
+Status qgemv_w2a8(const void* packed_weights, const std::int8_t* x,
+                  const float* activation_scale, float* y, long long n,
+                  long long k) {
+  return bitnet_int8_gemm(packed_weights, x, activation_scale, y, 1, n, k);
+}
+
+Status qgemv_w2a8_v2(const void* packed_weights, const std::int8_t* x,
+                     const float* activation_scale, float* y, long long n,
+                     long long k) {
+  return bitnet_int8_gemm(packed_weights, x, activation_scale, y, 1, n, k);
 }
 
 Status fp8_scaled_gemm(const std::uint8_t* weights,
@@ -262,6 +303,11 @@ Status bitnet_fused_gemm(const void* packed_weights, const float* x,
              ? bitnet_int8_gemm(packed_weights, codes.data(), scales.data(), y,
                                 m, n, k)
              : status;
+}
+
+Status qgemm_w2a8_fused(const void* packed_weights, const float* x, float* y,
+                        long long m, long long n, long long k) {
+  return bitnet_fused_gemm(packed_weights, x, y, m, n, k);
 }
 
 }  // namespace quixicore_cpu

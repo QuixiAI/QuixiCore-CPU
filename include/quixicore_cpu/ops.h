@@ -91,6 +91,21 @@ Status gemm_gate_residual(const float* x, const float* weight,
                           const float* bias, const float* gate,
                           const float* residual, float* y, long long rows,
                           long long output_dim, long long input_dim);
+Status flux_gelu(const float* x, const float* weight, const float* bias,
+                 float* y, long long rows, long long output_dim,
+                 long long input_dim,
+                 GeluApprox approx = GeluApprox::kTanh);
+Status flux_gate(const float* x, const float* weight, const float* bias,
+                 const float* gate, const float* residual, float* y,
+                 long long rows, long long output_dim,
+                 long long input_dim);
+Status decode_linear(const float* x, const float* weight, const float* bias,
+                     float* y, long long rows, long long input_dim,
+                     long long output_dim, bool gelu = false);
+Status decode_linear_residual(
+    const float* x, const float* weight, const float* bias,
+    const float* residual, float* y, long long rows, long long input_dim,
+    long long output_dim);
 // Complex GEMM with planar real/imaginary inputs and outputs.
 Status complex_gemm(const float* a_real, const float* a_imag,
                     const float* b_real, const float* b_imag,
@@ -106,6 +121,39 @@ Status attention(const float* q, const float* k, const float* v, float* out,
                  long long query_heads, long long kv_heads,
                  long long query_length, long long kv_length,
                  long long head_dim, bool causal);
+
+// Attention forward with row log-sum-exp retained for staged backward or
+// state merging. softcap<=0 disables tanh score capping; sinks contributes a
+// denominator-only logit per query head when non-null.
+Status attention_with_lse(
+    const float* q, const float* k, const float* v, const float* sinks,
+    float* out, float* logsumexp, long long query_heads, long long kv_heads,
+    long long query_length, long long kv_length, long long head_dim,
+    bool causal, float scale = 0.0f, float softcap = 0.0f);
+Status attention_backward_prep(const float* out, const float* grad_out,
+                               float* delta, long long query_heads,
+                               long long query_length, long long head_dim);
+Status attention_backward_dq(
+    const float* q, const float* k, const float* v, const float* grad_out,
+    const float* logsumexp, const float* delta, float* grad_q,
+    long long query_heads, long long kv_heads, long long query_length,
+    long long kv_length, long long head_dim, bool causal);
+Status attention_backward_dkv(
+    const float* q, const float* k, const float* v, const float* grad_out,
+    const float* logsumexp, const float* delta, float* grad_k, float* grad_v,
+    long long query_heads, long long kv_heads, long long query_length,
+    long long kv_length, long long head_dim, bool causal);
+Status merge_attention_states(
+    const float* prefix_out, const float* prefix_logsumexp,
+    const float* suffix_out, const float* suffix_logsumexp, float* out,
+    float* output_logsumexp, long long tokens, long long heads,
+    long long head_dim, long long prefix_tokens);
+Status merge_attention_states_fp8(
+    const float* prefix_out, const float* prefix_logsumexp,
+    const float* suffix_out, const float* suffix_logsumexp,
+    std::uint8_t* out_codes, float* output_logsumexp, long long tokens,
+    long long heads, long long head_dim, long long prefix_tokens,
+    float output_scale);
 
 // Backward for the dense/GQA attention above. All gradients are overwritten.
 Status attention_backward(const float* q, const float* k, const float* v,
@@ -152,6 +200,13 @@ Status biased_attention(const float* q, const float* k, const float* v,
                         long long kv_heads, long long query_length,
                         long long kv_length, long long head_dim,
                         float scale = 0.0f);
+// Swin packed layout qkv [windows,tokens,3,heads,32], output
+// [windows,tokens,heads,32]. mask is additive
+// [windows_per_image,tokens,tokens] and may be null.
+Status swin_attention_d32(
+    const float* qkv, const float* relative_bias, const float* mask,
+    float* out, long long windows, long long tokens, long long heads,
+    long long windows_per_image = 0);
 
 // RoPE using caller-provided tables. positions [tokens], cos/sin
 // [max_position,head_dim/2]. interleaved selects adjacent-pair layout.
@@ -169,6 +224,15 @@ Status qk_norm_rope(const float* qkv, const float* q_weight,
                     long long key_heads, long long value_heads,
                     long long head_dim, long long max_position,
                     float eps = 1e-5f, bool interleaved = false);
+// Split-output CPU counterpart of the sibling KV-f16 seam. CPU outputs remain
+// f32 and are shaped [T,Hq,D], [T,Hk,D], [T,Hv,D].
+Status qk_norm_rope_split(
+    const float* qkv, const float* q_weight, const float* k_weight,
+    const float* cosine, const float* sine, const int* positions,
+    float* q_out, float* k_out, float* v_out, long long tokens,
+    long long query_heads, long long key_heads, long long value_heads,
+    long long head_dim, long long max_position, float eps = 1e-5f,
+    bool interleaved = false, bool gemma_weight = false);
 
 // Quantized dense attention: K/V vectors use qgemv packed blocks independently
 // at [B,H,S,blocks].
@@ -192,6 +256,20 @@ Status rope_kv_insert(const float* k, const float* v, const float* cosine,
                       long long slots, long long kv_heads, long long head_dim,
                       long long max_position, bool do_norm = false,
                       bool gemma_weight = false, float eps = 1e-6f);
+
+// One-token decode fusion over contiguous [B,Hkv,cache_length,D] caches.
+// context_lengths is the append index; the call writes K/V then attends over
+// tokens [0,context].
+Status decode_cache_attention(
+    const float* q, const float* new_k, const float* new_v,
+    const float* cosine, const float* sine, const int* positions,
+    const int* context_lengths, const float* q_weight,
+    const float* k_weight, float* key_cache, float* value_cache, float* out,
+    long long batch, long long query_heads, long long kv_heads,
+    long long cache_length, long long head_dim, long long max_position,
+    float eps = 1e-6f, bool do_q_norm = false,
+    bool do_k_norm = false, bool gemma_weight = false,
+    float scale = 0.0f);
 
 // Paged decode attention. q/out [B,Hq,D], cache [blocks,page,Hkv,D],
 // block_table [B,max_blocks], context_lens [B]. window<=0 means full context.
@@ -252,6 +330,14 @@ Status cascade_attention_fp8(
     long long batch, long long query_heads, long long kv_heads,
     long long head_dim, long long prefix_length, long long page_size,
     long long max_blocks, Float8Format format, float scale = 0.0f);
+Status cascade_attention_multi(
+    const float* q, const float* const* prefix_k,
+    const float* const* prefix_v, const long long* prefix_lengths,
+    long long levels, const float* key_cache, const float* value_cache,
+    const int* block_table, const int* context_lens, float* out,
+    long long cache_blocks, long long batch, long long query_heads,
+    long long kv_heads, long long head_dim, long long page_size,
+    long long max_blocks, float scale = 0.0f);
 
 // MLA latent decode. q [B,H,W], cache [blocks,page,W], out [B,H,value_dim].
 // Scores use all W=latent_dim+rope_dim values; values use the latent prefix.
@@ -260,6 +346,18 @@ Status mla_decode(const float* q, const float* kv_cache,
                   long long cache_blocks, long long batch, long long heads,
                   long long latent_dim, long long rope_dim, long long page_size,
                   long long max_blocks, float scale = 0.0f);
+Status mla_q_norm_rope(
+    const float* q, const float* cosine, const float* sine,
+    const int* positions, const float* norm_weight, float* out,
+    long long tokens, long long heads, long long nope_dim,
+    long long rope_dim, long long max_position, int norm_mode,
+    float eps = 1e-6f);
+Status mla_kv_insert(
+    const float* latent, const float* key_rope, const float* cosine,
+    const float* sine, const int* positions, const int* slot_mapping,
+    const float* norm_weight, float* cache, long long tokens,
+    long long slots, long long latent_dim, long long rope_dim,
+    long long max_position, int norm_mode, float eps = 1e-6f);
 Status mla_kv_insert_fp8(
     const float* kv, const int* slot_mapping, std::uint8_t* code_cache,
     float* scale_cache, long long tokens, long long slots, long long width,
@@ -422,12 +520,43 @@ Status eagle_step_slot_mapping_metadata(
 Status eagle_expand_int32(const int* input, const int* cumulative_tokens,
                           int* output, long long batch, long long total,
                           int replace_from, int replace_to);
+Status eagle_prepare_next_token_int64(
+    const long long* sampled_tokens, const std::uint8_t* discard_mask,
+    const long long* backup_tokens, long long* next_tokens,
+    long long* valid_sampled_count, long long batch,
+    long long sampled_per_request, long long vocab);
+Status eagle_expand_int64(const long long* input,
+                          const long long* cumulative_tokens,
+                          long long* output, long long batch,
+                          long long total, long long replace_from,
+                          long long replace_to);
+Status eagle_step_slot_mapping_int64(
+    long long* sequence_lengths, const long long* positions,
+    const int* block_table, long long* clamped_positions,
+    long long* slot_mapping, long long batch, long long input_batch,
+    long long max_blocks, long long block_size, long long max_model_length,
+    long long pad_id);
+Status copy_and_expand_eagle(
+    const long long* target_token_ids, const long long* target_positions,
+    const long long* next_token_ids, const int* query_start_locations,
+    const int* query_end_locations, long long* output_input_ids,
+    long long* output_positions, std::uint8_t* rejected_mask,
+    std::uint8_t* masked_token_mask, int* new_token_indices,
+    int* hidden_state_mapping, long long batch, long long input_tokens,
+    long long output_tokens, long long padding_token_id,
+    long long parallel_drafting_token_id,
+    long long padding_slots_per_request, bool shift_input_ids);
 
 Status embedding_lookup(const float* table, const int* ids, float* out,
                         long long vocab, long long count, long long dim);
 Status embedding_backward(const int* ids, const float* grad_out,
                           float* grad_table, long long vocab,
                           long long count, long long dim);
+Status embedding_backward_sorted(const int* sorted_ids,
+                                  const int* permutation,
+                                  const float* grad_out, float* grad_table,
+                                  long long vocab, long long count,
+                                  long long dim, float scale = 1.0f);
 // Builds the source map consumed by merge_multimodal_spans. Positions outside
 // every span receive -1; overlapping spans use the first span.
 Status build_multimodal_source_map(
@@ -449,6 +578,9 @@ Status quantized_embedding(const void* table, const int* ids,
                            long long count, long long dim,
                            QuantFormat quant_format,
                            float scale = 1.0f, bool use_add = false);
+Status dequant_gather(const void* table, const int* ids, float* out,
+                      long long vocab, long long count, long long dim,
+                      QuantFormat quant_format, float scale = 1.0f);
 Status quantized_embedding_bag(const void* table, const int* ids,
                                const long long* offsets,
                                const float* sample_weights, float* out,
@@ -498,6 +630,9 @@ Status kv_cache_gather_fp8(
 
 Status dropout(const float* x, float* y, long long count, float probability,
                std::uint32_t seed);
+Status dropout_backward(const float* grad_out, float* grad_in,
+                        long long count, float probability,
+                        std::uint32_t seed);
 Status add(const float* x, const float* y, float* out, long long count);
 Status cross_entropy(const float* logits, const int* target, float* loss,
                      long long rows, long long vocab);
@@ -514,6 +649,8 @@ Status cross_entropy_backward(const float* logits, const int* target,
                               float z_loss = 0.0f,
                               float softcap = 0.0f);
 Status hadamard(const float* x, float* y, long long rows, long long dim);
+Status fwht_rotate(const float* x, const float* sign, float* y,
+                   long long rows, long long dim, bool inverse = false);
 Status packbits(const std::uint8_t* x, std::uint8_t* out, long long count,
                 bool bit_order_big = true);
 Status segment_packbits(const std::uint8_t* x, const long long* input_offsets,
@@ -599,6 +736,10 @@ Status moe_route_grouped(const float* router_logits, const float* bias,
                          int groups, int top_groups, bool renormalize,
                          float routed_scale = 1.0f,
                          MoeScoring scoring = MoeScoring::kSoftmax);
+Status moe_route_scored(const float* router_logits, int* expert_ids,
+                        float* expert_weights, long long tokens,
+                        long long experts, int top_k, int mode = 0,
+                        bool renormalize = true, float scaling = 1.0f);
 // Stable expert-major permutation of flattened [tokens,top_k] routing rows.
 Status moe_permute(const int* expert_ids, int* sorted_rows, int* offsets,
                    int* inverse, long long tokens, long long experts,
@@ -609,6 +750,13 @@ Status moe_pad_schedule(const int* sorted_rows, const int* offsets,
                         int* inverse_padded, int* padded_offsets,
                         long long tokens, long long experts, int top_k,
                         int tile_rows = 32);
+Status moe_lora_align(
+    const int* topk_ids, const int* token_lora_mapping,
+    const int* lora_ids, const std::uint8_t* adapter_enabled,
+    int* sorted_token_ids, int* expert_ids, int* tokens_post_pad,
+    long long tokens, long long max_loras, long long num_experts,
+    int top_k, int block_size, long long sorted_capacity_per_lora,
+    long long expert_capacity_per_lora);
 Status moe_gather(const float* x, const int* gather_rows, float* out,
                   long long tokens, long long gathered_rows, long long dim);
 Status moe_finalize(const float* expert_out, const int* inverse,
@@ -650,6 +798,29 @@ Status moe_grouped_qswiglu(
     long long input_dim, long long intermediate_dim, QuantFormat format,
     bool use_bias = false, bool oai_mode = false, float alpha = 1.702f,
     float limit = 7.0f);
+// Named CUDA/ROCm quantized-MoE seams with CPU-logical metadata layouts.
+// expert_ids is row-shaped; -1 denotes a padded row and produces zeros.
+Status moe_gemm_fp8(const float* x, const std::uint8_t* weight_codes,
+                    const float* weight_scales, const int* expert_ids,
+                    float* out, long long rows, long long experts,
+                    long long input_dim, long long output_dim);
+// WNA16 weights are uint32-packed in the sibling de-interleave order. Scales
+// are logical f32 [E,N,K/group_size]; zero_points may be null for 8/128.
+Status moe_gemm_wna16(const float* x, const std::uint32_t* packed_weights,
+                      const float* scales,
+                      const std::uint8_t* zero_points,
+                      const int* expert_ids, float* out, long long rows,
+                      long long experts, long long input_dim,
+                      long long output_dim, long long group_size, int bits);
+// Dual-operand NVFP4: activation scales [rows,K/16], weight scales
+// [E,N,K/16], and expert_scale is the post-accumulation multiplier.
+Status moe_gemm_nvfp4(
+    const std::uint8_t* activation_codes,
+    const std::uint8_t* weight_codes,
+    const std::uint8_t* activation_scale_codes,
+    const std::uint8_t* weight_scale_codes, const float* expert_scale,
+    const int* expert_ids, float* out, long long rows, long long experts,
+    long long input_dim, long long output_dim);
 
 // A [groups,M,K], B [groups,K,N], C [groups,M,N], all row-major.
 Status grouped_gemm(const float* a, const float* b, float* c,
@@ -721,6 +892,14 @@ Status mamba2_backward(const float* c, const float* b, const float* x,
                        float* grad_c, float* grad_b, float* grad_x,
                        float* grad_cumulative_log, long long batch,
                        long long heads, long long sequence, long long dim);
+Status ssd_chunked(const float* c, const float* b, const float* x,
+                   const float* cumulative_log, float* y, long long batch,
+                   long long heads, long long sequence, long long dim);
+Status ssd_chunked_backward(
+    const float* c, const float* b, const float* x,
+    const float* cumulative_log, const float* grad_y, float* grad_c,
+    float* grad_b, float* grad_x, float* grad_cumulative_log,
+    long long batch, long long heads, long long sequence, long long dim);
 Status ssd_decode(const float* state, const float* alpha, const float* x,
                   const float* k, const float* q, float* y, float* next_state,
                   long long batch, long long heads, long long dim);
@@ -756,6 +935,20 @@ Status indexer_k_gather(const std::uint8_t* code_cache,
                         float* out, long long cache_slots, long long count,
                         long long head_dim,
                         long long quant_block_size = 128);
+Status indexer_k_gather_paged(
+    const std::uint8_t* code_cache, const float* scale_cache,
+    const int* block_table, const int* cumulative_lengths,
+    std::uint8_t* output_codes, float* output_scales,
+    long long cache_blocks, long long batch, long long max_blocks,
+    long long cache_block_size, long long total_tokens,
+    long long head_dim, long long quant_block_size = 128);
+Status convert_vertical_slash_indexes(
+    const int* query_lengths, const int* kv_lengths,
+    const int* vertical_indexes, const int* slash_indexes,
+    int* block_count, int* block_offset, int* column_count,
+    int* column_index, long long batch, long long heads,
+    long long rows, long long vertical_width, long long slash_width,
+    int block_size_m = 64, int block_size_n = 64, bool causal = true);
 Status minference_block_mask(const int* vertical_indices,
                              const int* slash_offsets,
                              const int* context_lengths, int* block_mask,
