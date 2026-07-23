@@ -22,35 +22,36 @@ Status mamba2(const float* c, const float* b, const float* x,
   }
   threading::parallel_ranges(batch * heads, 1,
                              [&](long long begin, long long end, int) {
-    thread_local std::vector<double> state;
+    thread_local std::vector<float> state;
+    thread_local std::vector<float> projected;
     for (long long bh = begin; bh < end; ++bh) {
       const long long offset = bh * sequence * dim;
       const float* decay = cumulative_log + bh * sequence;
       state.assign(static_cast<std::size_t>(dim * dim), 0.0);
+      projected.resize(static_cast<std::size_t>(dim));
       for (long long target = 0; target < sequence; ++target) {
-        const double transition =
+        const float transition =
             target == 0
-                ? 0.0
-                : std::exp(static_cast<double>(decay[target] -
-                                               decay[target - 1]));
+                ? 0.0f
+                : std::exp(decay[target] - decay[target - 1]);
         const float* bt = b + offset + target * dim;
         const float* xt = x + offset + target * dim;
+        const float* ct = c + offset + target * dim;
+        std::fill(projected.begin(), projected.end(), 0.0);
         for (long long key = 0; key < dim; ++key) {
-          double* state_row = state.data() + key * dim;
+          float* state_row = state.data() + key * dim;
+          const float coefficient = ct[key];
           for (long long value = 0; value < dim; ++value) {
             state_row[value] =
-                (target == 0 ? 0.0 : transition * state_row[value]) +
-                static_cast<double>(bt[key]) * xt[value];
+                (target == 0 ? 0.0f : transition * state_row[value]) +
+                bt[key] * xt[value];
+            projected[static_cast<std::size_t>(value)] +=
+                coefficient * state_row[value];
           }
         }
         float* destination = y + offset + target * dim;
-        const float* ct = c + offset + target * dim;
         for (long long value = 0; value < dim; ++value) {
-          double sum = 0.0;
-          for (long long key = 0; key < dim; ++key) {
-            sum += static_cast<double>(ct[key]) * state[key * dim + value];
-          }
-          destination[value] = static_cast<float>(sum);
+          destination[value] = projected[static_cast<std::size_t>(value)];
         }
       }
     }
@@ -192,7 +193,7 @@ Status fft_convolution(const float* x, const float* kernel, float* out,
     return Status::kOk;
   }
 
-  using Complex = std::complex<double>;
+  using Complex = std::complex<float>;
   const auto transform = [](Complex* values, long long count, bool inverse) {
     for (long long item = 1, reversed = 0; item < count; ++item) {
       long long bit = count >> 1;
@@ -203,9 +204,10 @@ Status fft_convolution(const float* x, const float* kernel, float* out,
       reversed ^= bit;
       if (item < reversed) std::swap(values[item], values[reversed]);
     }
-    constexpr double kPi = 3.141592653589793238462643383279502884;
+    constexpr float kPi = 3.14159265358979323846f;
     for (long long width = 2; width <= count;) {
-      const double angle = (inverse ? 2.0 : -2.0) * kPi / width;
+      const float angle = (inverse ? 2.0f : -2.0f) * kPi /
+                          static_cast<float>(width);
       const Complex root(std::cos(angle), std::sin(angle));
       for (long long base = 0; base < count; base += width) {
         Complex phase(1.0, 0.0);
@@ -221,10 +223,40 @@ Status fft_convolution(const float* x, const float* kernel, float* out,
       width <<= 1;
     }
     if (inverse) {
-      const double scale = 1.0 / static_cast<double>(count);
+      const float scale = 1.0f / static_cast<float>(count);
       for (long long item = 0; item < count; ++item) values[item] *= scale;
     }
   };
+
+  if (batch == 1) {
+    threading::parallel_ranges(heads, 1,
+                               [&](long long begin, long long end, int) {
+      thread_local std::vector<Complex> spectrum;
+      thread_local std::vector<Complex> signal;
+      spectrum.resize(static_cast<std::size_t>(length));
+      signal.resize(static_cast<std::size_t>(length));
+      for (long long head = begin; head < end; ++head) {
+        for (long long item = 0; item < length; ++item) {
+          spectrum[static_cast<std::size_t>(item)] =
+              Complex(kernel[head * length + item], 0.0f);
+          signal[static_cast<std::size_t>(item)] =
+              Complex(x[head * length + item], 0.0f);
+        }
+        transform(spectrum.data(), length, false);
+        transform(signal.data(), length, false);
+        for (long long item = 0; item < length; ++item) {
+          signal[static_cast<std::size_t>(item)] *=
+              spectrum[static_cast<std::size_t>(item)];
+        }
+        transform(signal.data(), length, true);
+        for (long long item = 0; item < length; ++item) {
+          out[head * length + item] =
+              signal[static_cast<std::size_t>(item)].real();
+        }
+      }
+    });
+    return Status::kOk;
+  }
 
   std::vector<Complex> kernel_spectrum(
       static_cast<std::size_t>(heads * length));

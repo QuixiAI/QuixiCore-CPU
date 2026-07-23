@@ -51,6 +51,7 @@ float dot_i8x16_f32(int8x16_t weights, const float* input) {
                   vld1q_f32(input + 12));
   return vaddvq_f32(sum);
 }
+
 #endif
 
 float q4_0_row_dot(const quant::BlockQ4_0* row, const float* x,
@@ -79,6 +80,52 @@ float q4_0_row_dot(const quant::BlockQ4_0* row, const float* x,
     total += fp16_to_fp32(row[block].d) * dot;
   }
   return total;
+}
+
+void q4_0_pair_row_dot(const quant::BlockQ4_0* first,
+                       const quant::BlockQ4_0* second, const float* x,
+                       long long blocks, float* first_total,
+                       float* second_total) {
+  float total0 = 0.0f;
+  float total1 = 0.0f;
+  for (long long block = 0; block < blocks; ++block) {
+    const float* input = x + block * quant::kQ4_0BlockSize;
+#if defined(__aarch64__) || defined(_M_ARM64)
+    const uint8x16_t mask = vdupq_n_u8(15);
+    const uint8x16_t offset = vdupq_n_u8(8);
+    const uint8x16_t codes0 = vld1q_u8(first[block].qs);
+    const uint8x16_t codes1 = vld1q_u8(second[block].qs);
+    const int8x16_t low0 = vreinterpretq_s8_u8(
+        vsubq_u8(vandq_u8(codes0, mask), offset));
+    const int8x16_t high0 = vreinterpretq_s8_u8(
+        vsubq_u8(vshrq_n_u8(codes0, 4), offset));
+    const int8x16_t low1 = vreinterpretq_s8_u8(
+        vsubq_u8(vandq_u8(codes1, mask), offset));
+    const int8x16_t high1 = vreinterpretq_s8_u8(
+        vsubq_u8(vshrq_n_u8(codes1, 4), offset));
+    const float dot0 =
+        dot_i8x16_f32(low0, input) + dot_i8x16_f32(high0, input + 16);
+    const float dot1 =
+        dot_i8x16_f32(low1, input) + dot_i8x16_f32(high1, input + 16);
+#else
+    float dot0 = 0.0f;
+    float dot1 = 0.0f;
+    for (int item = 0; item < 16; ++item) {
+      dot0 += static_cast<float>((first[block].qs[item] & 15) - 8) *
+              input[item];
+      dot0 += static_cast<float>((first[block].qs[item] >> 4) - 8) *
+              input[item + 16];
+      dot1 += static_cast<float>((second[block].qs[item] & 15) - 8) *
+              input[item];
+      dot1 += static_cast<float>((second[block].qs[item] >> 4) - 8) *
+              input[item + 16];
+    }
+#endif
+    total0 += fp16_to_fp32(first[block].d) * dot0;
+    total1 += fp16_to_fp32(second[block].d) * dot1;
+  }
+  *first_total = total0;
+  *second_total = total1;
 }
 
 float q8_0_row_dot(const quant::BlockQ8_0* row, const float* x,
@@ -169,8 +216,9 @@ Status qgemv_up_gate(QuantFormat format, const void* packed_up,
     threading::parallel_ranges(n, 24,
                                [&](long long begin, long long end, int) {
       for (long long row = begin; row < end; ++row) {
-        up[row] = q4_0_row_dot(up_blocks + row * blocks, x, blocks);
-        gate[row] = q4_0_row_dot(gate_blocks + row * blocks, x, blocks);
+        q4_0_pair_row_dot(up_blocks + row * blocks,
+                          gate_blocks + row * blocks, x, blocks, up + row,
+                          gate + row);
       }
     });
     return Status::kOk;
@@ -213,10 +261,10 @@ Status qgemv_up_gate_activation(QuantFormat format, const void* packed_up,
     threading::parallel_ranges(n, 24,
                                [&](long long begin, long long end, int) {
       for (long long row = begin; row < end; ++row) {
-        const float up =
-            q4_0_row_dot(up_blocks + row * blocks, x, blocks);
-        const float gate =
-            q4_0_row_dot(gate_blocks + row * blocks, x, blocks);
+        float up = 0.0f;
+        float gate = 0.0f;
+        q4_0_pair_row_dot(up_blocks + row * blocks,
+                          gate_blocks + row * blocks, x, blocks, &up, &gate);
         out[row] = activate(gate, gelu_tanh) * up;
       }
     });

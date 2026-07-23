@@ -45,19 +45,31 @@ RowNorm<LayerNorm> add_and_measure(const float* x, const float* residual,
   } else {
     double sumsq = 0.0;
 #if defined(__aarch64__) || defined(_M_ARM64)
-    float64x2_t squares0 = vdupq_n_f64(0.0);
-    float64x2_t squares1 = vdupq_n_f64(0.0);
+    float32x4_t squares0 = vdupq_n_f32(0.0f);
+    float32x4_t squares1 = vdupq_n_f32(0.0f);
+    float32x4_t squares2 = vdupq_n_f32(0.0f);
+    float32x4_t squares3 = vdupq_n_f32(0.0f);
     long long item = 0;
-    for (; item + 3 < hidden; item += 4) {
-      const float32x4_t value =
+    for (; item + 15 < hidden; item += 16) {
+      const float32x4_t value0 =
           vaddq_f32(vld1q_f32(x + item), vld1q_f32(residual + item));
-      vst1q_f32(residual_out + item, value);
-      const float64x2_t low = vcvt_f64_f32(vget_low_f32(value));
-      const float64x2_t high = vcvt_f64_f32(vget_high_f32(value));
-      squares0 = vfmaq_f64(squares0, low, low);
-      squares1 = vfmaq_f64(squares1, high, high);
+      const float32x4_t value1 = vaddq_f32(
+          vld1q_f32(x + item + 4), vld1q_f32(residual + item + 4));
+      const float32x4_t value2 = vaddq_f32(
+          vld1q_f32(x + item + 8), vld1q_f32(residual + item + 8));
+      const float32x4_t value3 = vaddq_f32(
+          vld1q_f32(x + item + 12), vld1q_f32(residual + item + 12));
+      vst1q_f32(residual_out + item, value0);
+      vst1q_f32(residual_out + item + 4, value1);
+      vst1q_f32(residual_out + item + 8, value2);
+      vst1q_f32(residual_out + item + 12, value3);
+      squares0 = vfmaq_f32(squares0, value0, value0);
+      squares1 = vfmaq_f32(squares1, value1, value1);
+      squares2 = vfmaq_f32(squares2, value2, value2);
+      squares3 = vfmaq_f32(squares3, value3, value3);
     }
-    sumsq = vaddvq_f64(vaddq_f64(squares0, squares1));
+    sumsq = static_cast<double>(vaddvq_f32(vaddq_f32(
+        vaddq_f32(squares0, squares1), vaddq_f32(squares2, squares3))));
     for (; item < hidden; ++item) {
       const float value = x[item] + residual[item];
       residual_out[item] = value;
@@ -142,19 +154,46 @@ Status norm_add_quant_dynamic(
         bool group_invalid = false;
 #if defined(__aarch64__) || defined(_M_ARM64)
         if constexpr (!LayerNorm && std::is_same_v<Code, std::int8_t>) {
-          float32x4_t vector_maximum = vdupq_n_f32(0.0f);
+          float32x4_t maximum0 = vdupq_n_f32(0.0f);
+          float32x4_t maximum1 = vdupq_n_f32(0.0f);
+          float32x4_t maximum2 = vdupq_n_f32(0.0f);
+          float32x4_t maximum3 = vdupq_n_f32(0.0f);
           long long item = 0;
           const float32x4_t inverse_norm = vdupq_n_f32(norm.inverse);
+          for (; item + 15 < group_size; item += 16) {
+            const long long column = group_base + item;
+            const float32x4_t value0 = vmulq_f32(
+                vmulq_f32(vld1q_f32(residual_row + column), inverse_norm),
+                vld1q_f32(weight + column));
+            const float32x4_t value1 = vmulq_f32(
+                vmulq_f32(vld1q_f32(residual_row + column + 4), inverse_norm),
+                vld1q_f32(weight + column + 4));
+            const float32x4_t value2 = vmulq_f32(
+                vmulq_f32(vld1q_f32(residual_row + column + 8), inverse_norm),
+                vld1q_f32(weight + column + 8));
+            const float32x4_t value3 = vmulq_f32(
+                vmulq_f32(vld1q_f32(residual_row + column + 12), inverse_norm),
+                vld1q_f32(weight + column + 12));
+            vst1q_f32(group_values + item, value0);
+            vst1q_f32(group_values + item + 4, value1);
+            vst1q_f32(group_values + item + 8, value2);
+            vst1q_f32(group_values + item + 12, value3);
+            maximum0 = vmaxq_f32(maximum0, vabsq_f32(value0));
+            maximum1 = vmaxq_f32(maximum1, vabsq_f32(value1));
+            maximum2 = vmaxq_f32(maximum2, vabsq_f32(value2));
+            maximum3 = vmaxq_f32(maximum3, vabsq_f32(value3));
+          }
           for (; item + 3 < group_size; item += 4) {
             const long long column = group_base + item;
             const float32x4_t value = vmulq_f32(
                 vmulq_f32(vld1q_f32(residual_row + column), inverse_norm),
                 vld1q_f32(weight + column));
             vst1q_f32(group_values + item, value);
-            vector_maximum =
-                vmaxq_f32(vector_maximum, vabsq_f32(value));
+            maximum0 = vmaxq_f32(maximum0, vabsq_f32(value));
           }
-          maximum = vmaxvq_f32(vector_maximum);
+          maximum = vmaxvq_f32(vmaxq_f32(
+              vmaxq_f32(maximum0, maximum1),
+              vmaxq_f32(maximum2, maximum3)));
           group_invalid = !std::isfinite(maximum);
           for (; item < group_size; ++item) {
             const long long column = group_base + item;
@@ -195,6 +234,26 @@ Status norm_add_quant_dynamic(
           const float32x4_t inverse_scale = vdupq_n_f32(inverse);
           const int32x4_t lower = vdupq_n_s32(-127);
           const int32x4_t upper = vdupq_n_s32(127);
+          for (; item + 15 < group_size; item += 16) {
+            int32x4_t quantized0 = vcvtnq_s32_f32(vmulq_f32(
+                vld1q_f32(group_values + item), inverse_scale));
+            int32x4_t quantized1 = vcvtnq_s32_f32(vmulq_f32(
+                vld1q_f32(group_values + item + 4), inverse_scale));
+            int32x4_t quantized2 = vcvtnq_s32_f32(vmulq_f32(
+                vld1q_f32(group_values + item + 8), inverse_scale));
+            int32x4_t quantized3 = vcvtnq_s32_f32(vmulq_f32(
+                vld1q_f32(group_values + item + 12), inverse_scale));
+            quantized0 = vmaxq_s32(lower, vminq_s32(upper, quantized0));
+            quantized1 = vmaxq_s32(lower, vminq_s32(upper, quantized1));
+            quantized2 = vmaxq_s32(lower, vminq_s32(upper, quantized2));
+            quantized3 = vmaxq_s32(lower, vminq_s32(upper, quantized3));
+            const int16x8_t low = vcombine_s16(vqmovn_s32(quantized0),
+                                               vqmovn_s32(quantized1));
+            const int16x8_t high = vcombine_s16(vqmovn_s32(quantized2),
+                                                vqmovn_s32(quantized3));
+            vst1q_s8(codes + row_base + group_base + item,
+                      vcombine_s8(vqmovn_s16(low), vqmovn_s16(high)));
+          }
           for (; item + 3 < group_size; item += 4) {
             int32x4_t quantized = vcvtnq_s32_f32(
                 vmulq_f32(vld1q_f32(group_values + item), inverse_scale));

@@ -7,6 +7,10 @@
 #include <limits>
 #include <vector>
 
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include <arm_neon.h>
+#endif
+
 #include "kernels/common/validation.h"
 #include "kernels/quantization/gguf_ref.h"
 #include "quixicore_cpu/qgemv.h"
@@ -15,6 +19,24 @@
 
 namespace quixicore_cpu {
 namespace {
+
+double dot_f32(const float* lhs, const float* rhs, long long count) {
+  double total = 0.0;
+  long long item = 0;
+#if defined(__aarch64__) || defined(_M_ARM64)
+  float64x2_t sum0 = vdupq_n_f64(0.0);
+  float64x2_t sum1 = vdupq_n_f64(0.0);
+  for (; item + 3 < count; item += 4) {
+    const float32x4_t products =
+        vmulq_f32(vld1q_f32(lhs + item), vld1q_f32(rhs + item));
+    sum0 = vaddq_f64(sum0, vcvt_f64_f32(vget_low_f32(products)));
+    sum1 = vaddq_f64(sum1, vcvt_f64_f32(vget_high_f32(products)));
+  }
+  total = vaddvq_f64(vaddq_f64(sum0, sum1));
+#endif
+  for (; item < count; ++item) total += lhs[item] * rhs[item];
+  return total;
+}
 
 float capped_score(double score, float softcap) {
   return softcap > 0.0f
@@ -84,65 +106,83 @@ Status paged_impl(const float* q, const KeyValue* key_cache,
       float maximum = sinks != nullptr ? sinks[qhead]
                                        : -std::numeric_limits<float>::infinity();
       double denominator = sinks != nullptr ? 1.0 : 0.0;
-      for (long long position = start; position < context; ++position) {
-        const long long logical_block = position / page_size;
-        if (block_mask != nullptr &&
-            block_mask[(request * query_heads + qhead) * max_blocks +
-                       logical_block] == 0) {
-          continue;
-        }
-        const int physical =
-            block_table[request * max_blocks + logical_block];
-        const long long base =
-            ((static_cast<long long>(physical) * page_size +
-              position % page_size) * kv_heads + kvhead) * head_dim;
-        double dot = 0.0;
-        for (long long dim = 0; dim < head_dim; ++dim) {
-          float key;
+      constexpr long long kScoreTile = 16;
+      alignas(64) float scores[kScoreTile];
+      long long bases[kScoreTile];
+      for (long long tile_begin = start; tile_begin < context;
+           tile_begin += kScoreTile) {
+        const long long tile_end =
+            std::min(tile_begin + kScoreTile, context);
+        long long valid = 0;
+        float tile_maximum = -std::numeric_limits<float>::infinity();
+        for (long long position = tile_begin; position < tile_end; ++position) {
+          const long long logical_block = position / page_size;
+          if (block_mask != nullptr &&
+              block_mask[(request * query_heads + qhead) * max_blocks +
+                         logical_block] == 0) {
+            continue;
+          }
+          const int physical =
+              block_table[request * max_blocks + logical_block];
+          const long long base =
+              ((static_cast<long long>(physical) * page_size +
+                position % page_size) * kv_heads + kvhead) * head_dim;
+          double dot = 0.0;
           if constexpr (sizeof(KeyValue) == sizeof(std::uint8_t)) {
-            key = float8_decode(static_cast<std::uint8_t>(key_cache[base + dim]),
-                                fp8_format) * key_scale[kvhead];
+            for (long long dim = 0; dim < head_dim; ++dim) {
+              const float key =
+                  float8_decode(
+                      static_cast<std::uint8_t>(key_cache[base + dim]),
+                      fp8_format) * key_scale[kvhead];
+              dot += query[dim] * key;
+            }
           } else {
-            key = static_cast<float>(key_cache[base + dim]);
+            dot = dot_f32(query,
+                          reinterpret_cast<const float*>(key_cache + base),
+                          head_dim);
           }
-          dot += query[dim] * key;
+          dot *= score_scale;
+          if (alibi_slopes != nullptr) {
+            dot += alibi_slopes[qhead] * (position - (context - 1));
+          }
+          const float score = capped_score(dot, softcap);
+          scores[valid] = score;
+          bases[valid] = base;
+          tile_maximum = std::max(tile_maximum, score);
+          ++valid;
         }
-        dot *= score_scale;
-        if (alibi_slopes != nullptr) {
-          dot += alibi_slopes[qhead] * (position - (context - 1));
-        }
-        const float score = capped_score(dot, softcap);
-        if (score > maximum) {
-          const double old_weight = std::exp(maximum - score);
-          denominator = denominator * old_weight + 1.0;
+        if (valid == 0) continue;
+        const float next_maximum = std::max(maximum, tile_maximum);
+        const double old_weight = denominator > 0.0
+                                      ? std::exp(maximum - next_maximum)
+                                      : 0.0;
+        denominator *= old_weight;
+        if (old_weight != 1.0) {
+          const float scale_output = static_cast<float>(old_weight);
           for (long long dim = 0; dim < head_dim; ++dim) {
-            float value;
-            if constexpr (sizeof(KeyValue) == sizeof(std::uint8_t)) {
-              value = float8_decode(
-                          static_cast<std::uint8_t>(value_cache[base + dim]),
-                          fp8_format) * value_scale[kvhead];
-            } else {
-              value = static_cast<float>(value_cache[base + dim]);
-            }
-            output[dim] =
-                static_cast<float>(output[dim] * old_weight + value);
+            output[dim] *= scale_output;
           }
-          maximum = score;
-        } else {
-          const double weight = std::exp(score - maximum);
+        }
+        for (long long index = 0; index < valid; ++index) {
+          const double weight = std::exp(scores[index] - next_maximum);
           denominator += weight;
-          for (long long dim = 0; dim < head_dim; ++dim) {
-            float value;
-            if constexpr (sizeof(KeyValue) == sizeof(std::uint8_t)) {
-              value = float8_decode(
-                          static_cast<std::uint8_t>(value_cache[base + dim]),
-                          fp8_format) * value_scale[kvhead];
-            } else {
-              value = static_cast<float>(value_cache[base + dim]);
+          const long long base = bases[index];
+          if constexpr (sizeof(KeyValue) == sizeof(std::uint8_t)) {
+            for (long long dim = 0; dim < head_dim; ++dim) {
+              const float value =
+                  float8_decode(
+                      static_cast<std::uint8_t>(value_cache[base + dim]),
+                      fp8_format) * value_scale[kvhead];
+              output[dim] += static_cast<float>(value * weight);
             }
-            output[dim] += static_cast<float>(value * weight);
+          } else {
+            for (long long dim = 0; dim < head_dim; ++dim) {
+              const float value = static_cast<float>(value_cache[base + dim]);
+              output[dim] += static_cast<float>(value * weight);
+            }
           }
         }
+        maximum = next_maximum;
       }
       if (denominator > 0.0) {
         const float inverse = static_cast<float>(1.0 / denominator);

@@ -133,7 +133,10 @@ bool run_all_panel_formats() {
       QuantFormat::kIQ4_NL,    QuantFormat::kIQ4_XS,
       QuantFormat::kIQ2_XXS,   QuantFormat::kIQ2_XS,
       QuantFormat::kIQ3_XXS,   QuantFormat::kIQ1_S,
-      QuantFormat::kTQ2_0,
+      QuantFormat::kTQ2_0,     QuantFormat::kQ1_0,
+      QuantFormat::kQ2_0,      QuantFormat::kIQ3_S,
+      QuantFormat::kIQ2_S,     QuantFormat::kIQ1_M,
+      QuantFormat::kTQ1_0,
   };
   constexpr long long n = 19;
   constexpr long long k = 256;

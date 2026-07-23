@@ -48,6 +48,17 @@ struct Buffers {
 
 const char* format_name(QuantFormat format) {
   switch (format) {
+    case QuantFormat::kQ1_0: return "q1_0";
+    case QuantFormat::kQ2_0: return "q2_0";
+    case QuantFormat::kQ4_0: return "q4_0";
+    case QuantFormat::kQ4_1: return "q4_1";
+    case QuantFormat::kQ5_0: return "q5_0";
+    case QuantFormat::kQ5_1: return "q5_1";
+    case QuantFormat::kQ8_0: return "q8_0";
+    case QuantFormat::kMXFP4: return "mxfp4";
+    case QuantFormat::kNVFP4: return "nvfp4";
+    case QuantFormat::kQ2_K: return "q2_k";
+    case QuantFormat::kQ3_K: return "q3_k";
     case QuantFormat::kQ4_K: return "q4_k";
     case QuantFormat::kQ5_K: return "q5_k";
     case QuantFormat::kQ6_K: return "q6_k";
@@ -56,7 +67,12 @@ const char* format_name(QuantFormat format) {
     case QuantFormat::kIQ2_XXS: return "iq2_xxs";
     case QuantFormat::kIQ2_XS: return "iq2_xs";
     case QuantFormat::kIQ3_XXS: return "iq3_xxs";
+    case QuantFormat::kIQ3_S: return "iq3_s";
+    case QuantFormat::kIQ2_S: return "iq2_s";
     case QuantFormat::kIQ1_S: return "iq1_s";
+    case QuantFormat::kIQ1_M: return "iq1_m";
+    case QuantFormat::kTQ1_0: return "tq1_0";
+    case QuantFormat::kTQ2_0: return "tq2_0";
     default: return "gguf";
   }
 }
@@ -65,6 +81,62 @@ void set_half(std::uint8_t* bytes, std::size_t offset, float one = 1.0f) {
   const std::uint16_t bits = one == 0.0f ? 0x0000u : 0x3c00u;
   bytes[offset] = static_cast<std::uint8_t>(bits & 0xffu);
   bytes[offset + 1] = static_cast<std::uint8_t>(bits >> 8);
+}
+
+void normalize_block_scales(QuantFormat format, std::uint8_t* block) {
+  switch (format) {
+    case QuantFormat::kQ4_1:
+    case QuantFormat::kQ5_1:
+      set_half(block, 2);
+      [[fallthrough]];
+    case QuantFormat::kQ1_0:
+    case QuantFormat::kQ2_0:
+    case QuantFormat::kQ5_0:
+    case QuantFormat::kIQ4_NL:
+    case QuantFormat::kIQ4_XS:
+    case QuantFormat::kIQ2_XXS:
+    case QuantFormat::kIQ2_XS:
+    case QuantFormat::kIQ3_XXS:
+    case QuantFormat::kIQ3_S:
+    case QuantFormat::kIQ2_S:
+    case QuantFormat::kIQ1_S:
+      set_half(block, 0);
+      break;
+    case QuantFormat::kQ2_K:
+      set_half(block, 80);
+      set_half(block, 82);
+      break;
+    case QuantFormat::kQ3_K:
+      set_half(block, 108);
+      break;
+    case QuantFormat::kQ4_K:
+    case QuantFormat::kQ5_K:
+      set_half(block, 0);
+      set_half(block, 2, 0.0f);
+      break;
+    case QuantFormat::kQ6_K:
+      set_half(block, 208);
+      break;
+    case QuantFormat::kMXFP4:
+      block[0] = 127;
+      break;
+    case QuantFormat::kNVFP4:
+      for (int index = 0; index < 4; ++index) block[index] = 0x38;
+      break;
+    case QuantFormat::kIQ1_M:
+      for (int index = 48; index < 56; ++index) block[index] = 0;
+      block[53] = 0xc0;
+      block[55] = 0x30;
+      break;
+    case QuantFormat::kTQ1_0:
+      set_half(block, 52);
+      break;
+    case QuantFormat::kTQ2_0:
+      set_half(block, 64);
+      break;
+    default:
+      break;
+  }
 }
 
 void decomposed_gemv(Buffers& buffers) {
@@ -284,7 +356,7 @@ CaseDecl make_gguf_weight_only(QuantFormat format, long long n, long long k) {
   decl.shape = {{"m", 1}, {"n", n}, {"k", k}};
   decl.dtype = "f32";
   decl.format = name;
-  decl.notes = std::string("GGUF block-decode SIMD GEMV, variant ") +
+  decl.notes = std::string("GGUF direct packed block-dot GEMV, variant ") +
                quixicore_cpu::qgemv_variant(format);
   decl.flops = 2.0 * n * k;
   std::size_t packed_size = 0;
@@ -316,14 +388,7 @@ CaseDecl make_gguf_weight_only(QuantFormat format, long long n, long long k) {
     }
     for (long long i = 0; i < k; ++i) buffers->x.get()[i] = rng.next();
     for (std::size_t offset = 0; offset < packed_size; offset += block_bytes) {
-      if (format == QuantFormat::kQ6_K) {
-        set_half(buffers->packed.get() + offset, 208);
-      } else {
-        set_half(buffers->packed.get() + offset, 0);
-        if (format == QuantFormat::kQ4_K || format == QuantFormat::kQ5_K) {
-          set_half(buffers->packed.get() + offset, 2, 0.0f);
-        }
-      }
+      normalize_block_scales(format, buffers->packed.get() + offset);
     }
     CaseBody body;
     body.target = [buffers]() {
@@ -373,10 +438,18 @@ void build_qgemv_formats_cases(const BuildCtx& ctx,
   out.push_back(make_w8a8(QuantFormat::kQ8_0, n, k));
   const long long generic_n = ctx.preset == Preset::kSmoke ? 64 : 1024;
   for (QuantFormat format : {
-           QuantFormat::kQ4_K, QuantFormat::kQ5_K, QuantFormat::kQ6_K,
+           QuantFormat::kQ1_0, QuantFormat::kQ2_0,
+           QuantFormat::kQ4_1, QuantFormat::kQ5_0,
+           QuantFormat::kQ5_1, QuantFormat::kMXFP4,
+           QuantFormat::kNVFP4, QuantFormat::kQ2_K,
+           QuantFormat::kQ3_K, QuantFormat::kQ4_K,
+           QuantFormat::kQ5_K, QuantFormat::kQ6_K,
            QuantFormat::kIQ4_NL, QuantFormat::kIQ4_XS,
            QuantFormat::kIQ2_XXS, QuantFormat::kIQ2_XS,
-           QuantFormat::kIQ3_XXS, QuantFormat::kIQ1_S}) {
+           QuantFormat::kIQ3_XXS, QuantFormat::kIQ3_S,
+           QuantFormat::kIQ2_S, QuantFormat::kIQ1_S,
+           QuantFormat::kIQ1_M, QuantFormat::kTQ1_0,
+           QuantFormat::kTQ2_0}) {
     out.push_back(make_gguf_weight_only(format, generic_n, k));
   }
 }

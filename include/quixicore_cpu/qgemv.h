@@ -40,6 +40,14 @@ enum class QuantFormat {
   kIQ3_XXS,
   kIQ1_S,
   kTQ2_0,
+  // Additional canonical llama.cpp/GGUF weight formats. Keep these appended so
+  // the numeric values of the existing QuixiCore formats remain stable.
+  kQ1_0,
+  kQ2_0,
+  kIQ3_S,
+  kIQ2_S,
+  kIQ1_M,
+  kTQ1_0,
 };
 
 // Quantized GEMV, QuixiCore family contract: out = dequantize(wq) @ x with
@@ -54,8 +62,9 @@ Status qgemv_packed_size(QuantFormat format, long long n, long long k,
                          size_t* size);
 
 // Quantize row-major f32 weights (n x k) into the packed format. Packing is
-// currently defined for q8_0/q4_0/tq2_0; the other formats are decode-compatible
-// with GGUF inputs and return kUnsupportedFormat from this entry point.
+// currently defined for q1_0/q2_0/q4_0/q4_1/q5_0/q5_1/q8_0, MXFP4,
+// NVFP4, tq1_0, and tq2_0. Other formats remain decode-compatible with GGUF
+// inputs and return kUnsupportedFormat from this entry point.
 Status qgemv_pack(QuantFormat format, const float* weights, long long n,
                   long long k, void* packed);
 

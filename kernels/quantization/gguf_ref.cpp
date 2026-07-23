@@ -54,6 +54,18 @@ float dequant(QuantFormat format, const std::uint8_t* block, int column) {
     return code == 0 ? std::ldexp(1.0f, -127)
                      : std::ldexp(1.0f, static_cast<int>(code) - 127);
   };
+  const auto ue4m3 = [](std::uint8_t code) {
+    // UE4M3 is unsigned: bit 7 is not a sign bit. GGML reserves 0x7f as
+    // another zero representation and uses the remaining low seven bits as
+    // E4M3 with exponent bias 7.
+    if (code == 0 || code == 0x7f) return 0.0f;
+    const int exponent = (code >> 3) & 15;
+    const int mantissa = code & 7;
+    return exponent == 0
+               ? std::ldexp(static_cast<float>(mantissa), -9)
+               : std::ldexp(1.0f + static_cast<float>(mantissa) / 8.0f,
+                            exponent - 7);
+  };
   const auto fp6 = [](unsigned code, bool e3m2) {
     const unsigned exponent = e3m2 ? ((code >> 2) & 7) : ((code >> 3) & 3);
     const unsigned mantissa = e3m2 ? (code & 3) : (code & 7);
@@ -68,6 +80,15 @@ float dequant(QuantFormat format, const std::uint8_t* block, int column) {
     return code & 32 ? -magnitude : magnitude;
   };
   switch (format) {
+    case QuantFormat::kQ1_0: {
+      const int bit = (block[2 + column / 8] >> (column & 7)) & 1;
+      return half_at(block) * (bit != 0 ? 1.0f : -1.0f);
+    }
+    case QuantFormat::kQ2_0: {
+      const int quant =
+          (block[2 + column / 4] >> (2 * (column & 3))) & 3;
+      return half_at(block) * static_cast<float>(quant - 1);
+    }
     case QuantFormat::kQ8_0:
       return half_at(block) *
              static_cast<float>(static_cast<std::int8_t>(block[2 + column]));
@@ -131,10 +152,16 @@ float dequant(QuantFormat format, const std::uint8_t* block, int column) {
       return e8m0(block[0]) *
              float8_decode(block[1 + column], Float8Format::kE4M3FN);
     case QuantFormat::kNVFP4: {
-      const std::uint8_t* quants = block + 1;
-      const int code = column < 8 ? quants[column] & 15
-                                  : quants[column - 8] >> 4;
-      return float8_decode(block[0], Float8Format::kE4M3FN) * e2m1(code);
+      // Canonical GGML block_nvfp4: four UE4M3 scales followed by four
+      // 16-value E2M1 sub-blocks. kvalues_mxfp4 stores doubled E2M1 values and
+      // ggml's UE4M3 decoder returns a half-scale; using ordinary E2M1 here is
+      // equivalent, with 0x7f retaining its format-specific zero meaning.
+      const int sub = column >> 4;
+      const int local = column & 15;
+      const std::uint8_t* quants = block + 4 + sub * 8;
+      const int code = local < 8 ? quants[local] & 15
+                                 : quants[local - 8] >> 4;
+      return ue4m3(block[sub]) * e2m1(code);
     }
     case QuantFormat::kMXFP4: {
       const std::uint8_t* quants = block + 1;
@@ -321,6 +348,57 @@ float dequant(QuantFormat format, const std::uint8_t* block, int column) {
       return scale * magnitude *
              ((signs & iq_tables::kmask_iq2xs[sign_element]) ? -1.0f : 1.0f);
     }
+    case QuantFormat::kIQ3_S: {
+      const std::uint8_t* quants = block + 2;
+      const std::uint8_t* high = block + 66;
+      const std::uint8_t* signs = block + 74;
+      const std::uint8_t* scales = block + 106;
+      const int block32 = column >> 5;
+      const int position = column & 31;
+      const int group8 = position >> 3;
+      const int within8 = position & 7;
+      const int group4 = within8 >> 2;
+      const int element = within8 & 3;
+      const int pair64 = block32 >> 1;
+      const int pair_half = block32 & 1;
+      const int quant_offset = block32 * 8 + group8 * 2 + group4;
+      const int high_byte = high[2 * pair64 + pair_half];
+      const int high_shift = group8 * 2 + group4;
+      const int grid_index = quants[quant_offset] |
+                             (((high_byte >> high_shift) & 1) << 8);
+      const std::uint32_t grid = iq_tables::iq3s_grid[grid_index];
+      const int sign =
+          (signs[block32 * 4 + group8] >> within8) & 1;
+      const int local_scale = pair_half == 0 ? (scales[pair64] & 15)
+                                             : (scales[pair64] >> 4);
+      const float scale =
+          half_at(block) * static_cast<float>(1 + 2 * local_scale);
+      const float magnitude =
+          static_cast<float>((grid >> (8 * element)) & 255);
+      return scale * magnitude * (sign != 0 ? -1.0f : 1.0f);
+    }
+    case QuantFormat::kIQ2_S: {
+      const std::uint8_t* quants = block + 2;
+      const std::uint8_t* high = block + 66;
+      const std::uint8_t* signs = block + 34;
+      const std::uint8_t* scales = block + 74;
+      const int block32 = column >> 5;
+      const int position = column & 31;
+      const int group8 = position >> 3;
+      const int element = position & 7;
+      const int grid_index =
+          quants[block32 * 4 + group8] |
+          (((high[block32] >> (2 * group8)) & 3) << 8);
+      const std::uint64_t grid = iq_tables::iq2s_grid[grid_index];
+      const int local_scale = group8 < 2 ? (scales[block32] & 15)
+                                         : (scales[block32] >> 4);
+      const float scale = half_at(block) * (0.5f + local_scale) * 0.25f;
+      const float magnitude =
+          static_cast<float>((grid >> (8 * element)) & 255);
+      const int sign =
+          (signs[block32 * 4 + group8] >> element) & 1;
+      return scale * magnitude * (sign != 0 ? -1.0f : 1.0f);
+    }
     case QuantFormat::kIQ1_S: {
       static constexpr float kDelta = 0.125f;
       const std::uint8_t* quants = block + 2;
@@ -344,6 +422,61 @@ float dequant(QuantFormat format, const std::uint8_t* block, int column) {
           (iq_tables::iq1s_grid_gpu[grid_index] >> (8 * element)) & 255;
       const std::uint32_t value = which & 1 ? byte >> 4 : byte & 15;
       return scale * float(value) + minimum;
+    }
+    case QuantFormat::kIQ1_M: {
+      static constexpr float kDelta = 0.125f;
+      const std::uint8_t* quants = block;
+      const std::uint8_t* high = block + 32;
+      const std::uint8_t* scale_bytes = block + 48;
+      const std::uint16_t scales[4] = {
+          u16_at(scale_bytes), u16_at(scale_bytes + 2),
+          u16_at(scale_bytes + 4), u16_at(scale_bytes + 6)};
+      const std::uint16_t scale_bits =
+          static_cast<std::uint16_t>((scales[0] >> 12) |
+          ((scales[1] >> 8) & 0x00f0) |
+          ((scales[2] >> 4) & 0x0f00) | (scales[3] & 0xf000));
+      const int block32 = column >> 5;
+      const int position = column & 31;
+      const int group8 = position >> 3;
+      const int element = position & 7;
+      const std::uint8_t high_byte = high[block32 * 2 + group8 / 2];
+      const int shift = (group8 & 1) == 0 ? 0 : 4;
+      const int grid_index = quants[block32 * 4 + group8] |
+                             (((high_byte >> shift) & 7) << 8);
+      const bool negative_delta =
+          (high_byte & ((group8 & 1) == 0 ? 0x08 : 0x80)) != 0;
+      const int scale_word = block32 >> 1;
+      const int scale_shift = 6 * (block32 & 1) +
+                              (group8 < 2 ? 0 : 3);
+      const int local_scale = (scales[scale_word] >> scale_shift) & 7;
+      const float scale =
+          fp16_to_fp32(scale_bits) * static_cast<float>(2 * local_scale + 1);
+      const std::uint64_t grid = iq_tables::iq1s_grid[grid_index];
+      const float value = static_cast<float>(static_cast<std::int8_t>(
+          (grid >> (8 * element)) & 255));
+      const float delta = negative_delta ? -kDelta : kDelta;
+      return scale * (value + delta);
+    }
+    case QuantFormat::kTQ1_0: {
+      static constexpr std::uint8_t kPow3[5] = {1, 3, 9, 27, 81};
+      int encoded = 0;
+      int trit = 0;
+      if (column < 240) {
+        const int section = column / 160;
+        const int within = column % 160;
+        const int stride = section == 0 ? 32 : 16;
+        const int section_base = section == 0 ? 0 : 32;
+        trit = within / stride;
+        encoded = block[section_base + (within % stride)];
+      } else {
+        const int within = column - 240;
+        trit = within / 4;
+        encoded = block[48 + (within & 3)];
+      }
+      const std::uint8_t rotated =
+          static_cast<std::uint8_t>(encoded * kPow3[trit]);
+      const int quant = (static_cast<unsigned>(rotated) * 3) >> 8;
+      return half_at(block + 52) * static_cast<float>(quant - 1);
     }
     case QuantFormat::kTQ2_0: {
       const int half = column >> 7;
@@ -379,6 +512,8 @@ bool gguf_format_info(QuantFormat format, long long* block_size,
   long long size = 0;
   std::size_t bytes = 0;
   switch (format) {
+    case QuantFormat::kQ1_0: size = 128; bytes = 18; break;
+    case QuantFormat::kQ2_0: size = 64; bytes = 18; break;
     case QuantFormat::kQ8_0: size = 32; bytes = 34; break;
     case QuantFormat::kQ4_0: size = 32; bytes = 18; break;
     case QuantFormat::kQ4_1: size = 32; bytes = 20; break;
@@ -393,7 +528,7 @@ bool gguf_format_info(QuantFormat format, long long* block_size,
     case QuantFormat::kFP8Raw: size = 128; bytes = 128; break;
     case QuantFormat::kFP4E2M1: size = 32; bytes = 18; break;
     case QuantFormat::kMXFP8: size = 32; bytes = 33; break;
-    case QuantFormat::kNVFP4: size = 16; bytes = 9; break;
+    case QuantFormat::kNVFP4: size = 64; bytes = 36; break;
     case QuantFormat::kMXFP4: size = 32; bytes = 17; break;
     case QuantFormat::kMXFP6E3M2: size = 32; bytes = 25; break;
     case QuantFormat::kMXFP6E2M3: size = 32; bytes = 25; break;
@@ -408,7 +543,11 @@ bool gguf_format_info(QuantFormat format, long long* block_size,
     case QuantFormat::kIQ2_XXS: size = 256; bytes = 66; break;
     case QuantFormat::kIQ2_XS: size = 256; bytes = 74; break;
     case QuantFormat::kIQ3_XXS: size = 256; bytes = 98; break;
+    case QuantFormat::kIQ3_S: size = 256; bytes = 110; break;
+    case QuantFormat::kIQ2_S: size = 256; bytes = 82; break;
     case QuantFormat::kIQ1_S: size = 256; bytes = 50; break;
+    case QuantFormat::kIQ1_M: size = 256; bytes = 56; break;
+    case QuantFormat::kTQ1_0: size = 256; bytes = 54; break;
     case QuantFormat::kTQ2_0: size = 256; bytes = 66; break;
   }
   if (size == 0) return false;

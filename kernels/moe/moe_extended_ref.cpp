@@ -67,25 +67,41 @@ float int8x16_dot(int8x16_t weights, const float* input) {
 }
 #endif
 
-float q4_block_dot(const quant::BlockQ4_0& block, const float* input) {
+void q4_pair_block_dot(const quant::BlockQ4_0& gate_block,
+                       const quant::BlockQ4_0& up_block, const float* input,
+                       float* gate, float* up) {
 #if defined(__aarch64__) || defined(_M_ARM64)
-  const uint8x16_t codes = vld1q_u8(block.qs);
   const uint8x16_t mask = vdupq_n_u8(15);
   const uint8x16_t offset = vdupq_n_u8(8);
-  const int8x16_t low = vreinterpretq_s8_u8(
-      vsubq_u8(vandq_u8(codes, mask), offset));
-  const int8x16_t high = vreinterpretq_s8_u8(
-      vsubq_u8(vshrq_n_u8(codes, 4), offset));
-  const float dot =
-      int8x16_dot(low, input) + int8x16_dot(high, input + 16);
+  const uint8x16_t gate_codes = vld1q_u8(gate_block.qs);
+  const uint8x16_t up_codes = vld1q_u8(up_block.qs);
+  const int8x16_t gate_low = vreinterpretq_s8_u8(
+      vsubq_u8(vandq_u8(gate_codes, mask), offset));
+  const int8x16_t gate_high = vreinterpretq_s8_u8(
+      vsubq_u8(vshrq_n_u8(gate_codes, 4), offset));
+  const int8x16_t up_low = vreinterpretq_s8_u8(
+      vsubq_u8(vandq_u8(up_codes, mask), offset));
+  const int8x16_t up_high = vreinterpretq_s8_u8(
+      vsubq_u8(vshrq_n_u8(up_codes, 4), offset));
+  const float gate_dot = int8x16_dot(gate_low, input) +
+                         int8x16_dot(gate_high, input + 16);
+  const float up_dot =
+      int8x16_dot(up_low, input) + int8x16_dot(up_high, input + 16);
 #else
-  float dot = 0.0f;
+  float gate_dot = 0.0f;
+  float up_dot = 0.0f;
   for (int item = 0; item < 16; ++item) {
-    dot += static_cast<float>((block.qs[item] & 15) - 8) * input[item];
-    dot += static_cast<float>((block.qs[item] >> 4) - 8) * input[item + 16];
+    gate_dot += static_cast<float>((gate_block.qs[item] & 15) - 8) *
+                input[item];
+    gate_dot += static_cast<float>((gate_block.qs[item] >> 4) - 8) *
+                input[item + 16];
+    up_dot += static_cast<float>((up_block.qs[item] & 15) - 8) * input[item];
+    up_dot += static_cast<float>((up_block.qs[item] >> 4) - 8) *
+              input[item + 16];
   }
 #endif
-  return fp16_to_fp32(block.d) * dot;
+  *gate += fp16_to_fp32(gate_block.d) * gate_dot;
+  *up += fp16_to_fp32(up_block.d) * up_dot;
 }
 
 Status grouped_qprojection(const float* x, const void* packed_weights,
@@ -796,10 +812,11 @@ Status moe_grouped_qswiglu(
               order[static_cast<std::size_t>(first + routed)];
           const float* input = x + row * input_dim + input_base;
           if (format == QuantFormat::kQ4_0) {
-            gate_accumulators[static_cast<std::size_t>(routed)] += q4_block_dot(
-                *reinterpret_cast<const quant::BlockQ4_0*>(gate_block), input);
-            up_accumulators[static_cast<std::size_t>(routed)] += q4_block_dot(
-                *reinterpret_cast<const quant::BlockQ4_0*>(up_block), input);
+            q4_pair_block_dot(
+                *reinterpret_cast<const quant::BlockQ4_0*>(gate_block),
+                *reinterpret_cast<const quant::BlockQ4_0*>(up_block), input,
+                &gate_accumulators[static_cast<std::size_t>(routed)],
+                &up_accumulators[static_cast<std::size_t>(routed)]);
           } else {
             gate_accumulators[static_cast<std::size_t>(routed)] +=
                 decoded_block_dot(gate_weights, input, block_size);

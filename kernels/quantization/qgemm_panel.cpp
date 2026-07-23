@@ -5,6 +5,10 @@
 #include <cstdint>
 #include <limits>
 
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include <arm_neon.h>
+#endif
+
 #include "kernels/common/fp16.h"
 #include "kernels/common/validation.h"
 #include "kernels/quantization/gguf_ref.h"
@@ -16,6 +20,20 @@
 
 namespace quixicore_cpu {
 namespace {
+
+void accumulate_rows(float* sums, const float* values, float weight,
+                     long long rows) {
+  long long row = 0;
+#if defined(__aarch64__) || defined(_M_ARM64)
+  const float32x4_t broadcast = vdupq_n_f32(weight);
+  for (; row + 3 < rows; row += 4) {
+    vst1q_f32(sums + row,
+              vfmaq_f32(vld1q_f32(sums + row), broadcast,
+                        vld1q_f32(values + row)));
+  }
+#endif
+  for (; row < rows; ++row) sums[row] += weight * values[row];
+}
 
 bool checked_mul(std::size_t lhs, std::size_t rhs, std::size_t* result) {
   if (lhs != 0 && rhs > std::numeric_limits<std::size_t>::max() / lhs) {
@@ -135,15 +153,11 @@ void q8_panel_rows(void* opaque, long long begin, long long end, int worker) {
           const float* values =
               context.transposed_x +
               (block * quant::kQ8_0BlockSize + element) * context.m;
-          for (long long row = 0; row < context.m; ++row) {
-            sums[row] += weight * values[row];
-          }
+          accumulate_rows(sums, values, weight, context.m);
         }
         const float scale = fp16_to_fp32(weights->d);
         float* accumulated = accumulator + lane * lane_stride;
-        for (long long row = 0; row < context.m; ++row) {
-          accumulated[row] += scale * sums[row];
-        }
+        accumulate_rows(accumulated, sums, scale, context.m);
       }
     }
     for (long long lane = 0; lane < lanes; ++lane) {
@@ -180,14 +194,10 @@ void generic_panel_rows(void* opaque, long long begin, long long end,
           const float* values =
               context.transposed_x +
               (block * context.block_size + element) * context.m;
-          for (long long row = 0; row < context.m; ++row) {
-            sums[row] += weight * values[row];
-          }
+          accumulate_rows(sums, values, weight, context.m);
         }
         float* accumulated = accumulator + lane * lane_stride;
-        for (long long row = 0; row < context.m; ++row) {
-          accumulated[row] += sums[row];
-        }
+        accumulate_rows(accumulated, sums, 1.0f, context.m);
       }
     }
     for (long long lane = 0; lane < lanes; ++lane) {
@@ -218,7 +228,9 @@ Status qgemm_prepacked(const CpuPackedWeights& weights, const float* x,
                  info.columns);
   }
   if (m < 64 && (info.format == QuantFormat::kQ4_0 ||
-                 info.format == QuantFormat::kQ8_0)) {
+                 info.format == QuantFormat::kQ8_0 ||
+                 info.format == QuantFormat::kIQ4_NL ||
+                 info.format == QuantFormat::kIQ4_XS)) {
     return qgemm(info.format, weights.contract_data(), x, y, m, info.rows,
                  info.columns);
   }

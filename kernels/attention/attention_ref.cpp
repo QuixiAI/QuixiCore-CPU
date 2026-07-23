@@ -5,6 +5,10 @@
 #include <limits>
 #include <vector>
 
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include <arm_neon.h>
+#endif
+
 #include "kernels/common/validation.h"
 #include "src/threading/thread_pool.h"
 
@@ -15,6 +19,82 @@ float default_scale(long long width, float scale) {
   return scale == 0.0f
              ? static_cast<float>(1.0 / std::sqrt(static_cast<double>(width)))
              : scale;
+}
+
+double dot_f32_precise(const float* lhs, const float* rhs, long long count) {
+  double total = 0.0;
+  long long item = 0;
+#if defined(__aarch64__) || defined(_M_ARM64)
+  float64x2_t sum0 = vdupq_n_f64(0.0);
+  float64x2_t sum1 = vdupq_n_f64(0.0);
+  for (; item + 3 < count; item += 4) {
+    const float32x4_t left = vld1q_f32(lhs + item);
+    const float32x4_t right = vld1q_f32(rhs + item);
+    sum0 = vfmaq_f64(sum0, vcvt_f64_f32(vget_low_f32(left)),
+                     vcvt_f64_f32(vget_low_f32(right)));
+    sum1 = vfmaq_f64(sum1, vcvt_f64_f32(vget_high_f32(left)),
+                     vcvt_f64_f32(vget_high_f32(right)));
+  }
+  total = vaddvq_f64(vaddq_f64(sum0, sum1));
+#endif
+  for (; item < count; ++item) {
+    total += static_cast<double>(lhs[item]) * rhs[item];
+  }
+  return total;
+}
+
+void replace_weighted(float* destination, const float* values,
+                      double old_weight, double new_weight,
+                      long long count) {
+  long long item = 0;
+#if defined(__aarch64__) || defined(_M_ARM64)
+  const float64x2_t old_broadcast = vdupq_n_f64(old_weight);
+  const float64x2_t new_broadcast = vdupq_n_f64(new_weight);
+  for (; item + 1 < count; item += 2) {
+    const float64x2_t previous =
+        vmulq_f64(vcvt_f64_f32(vld1_f32(destination + item)), old_broadcast);
+    const float64x2_t added =
+        vmulq_f64(vcvt_f64_f32(vld1_f32(values + item)), new_broadcast);
+    vst1_f32(destination + item, vcvt_f32_f64(vaddq_f64(previous, added)));
+  }
+#endif
+  for (; item < count; ++item) {
+    destination[item] = static_cast<float>(destination[item] * old_weight +
+                                            values[item] * new_weight);
+  }
+}
+
+void add_weighted(float* destination, const float* values, double weight,
+                  long long count) {
+  long long item = 0;
+#if defined(__aarch64__) || defined(_M_ARM64)
+  const float64x2_t broadcast = vdupq_n_f64(weight);
+  for (; item + 3 < count; item += 4) {
+    const float64x2_t product0 = vmulq_f64(
+        vcvt_f64_f32(vld1_f32(values + item)), broadcast);
+    const float64x2_t product1 = vmulq_f64(
+        vcvt_f64_f32(vld1_f32(values + item + 2)), broadcast);
+    vst1q_f32(destination + item,
+              vaddq_f32(vld1q_f32(destination + item),
+                        vcombine_f32(vcvt_f32_f64(product0),
+                                     vcvt_f32_f64(product1))));
+  }
+#endif
+  for (; item < count; ++item) {
+    destination[item] += static_cast<float>(values[item] * weight);
+  }
+}
+
+void scale_f32(float* values, float scale, long long count) {
+  long long item = 0;
+#if defined(__aarch64__) || defined(_M_ARM64)
+  const float32x4_t broadcast = vdupq_n_f32(scale);
+  for (; item + 3 < count; item += 4) {
+    vst1q_f32(values + item,
+              vmulq_f32(vld1q_f32(values + item), broadcast));
+  }
+#endif
+  for (; item < count; ++item) values[item] *= scale;
 }
 
 }  // namespace
@@ -131,10 +211,7 @@ Status attention(const float* q, const float* k, const float* v, float* out,
         }
         const float* key =
             k + (kv_head * kv_length + key_position) * head_dim;
-        double score = 0.0;
-        for (long long d = 0; d < head_dim; ++d) {
-          score += static_cast<double>(query[d]) * key[d];
-        }
+        double score = dot_f32_precise(query, key, head_dim);
         score *= scale;
         const double next_maximum = std::max(maximum, score);
         const double old_weight = std::exp(maximum - next_maximum);
@@ -142,17 +219,12 @@ Status attention(const float* q, const float* k, const float* v, float* out,
         denominator = denominator * old_weight + new_weight;
         const float* value =
             v + (kv_head * kv_length + key_position) * head_dim;
-        for (long long d = 0; d < head_dim; ++d) {
-          destination[d] = static_cast<float>(destination[d] * old_weight +
-                                              value[d] * new_weight);
-        }
+        replace_weighted(destination, value, old_weight, new_weight, head_dim);
         maximum = next_maximum;
       }
       if (denominator > 0.0) {
         const float inverse = static_cast<float>(1.0 / denominator);
-        for (long long d = 0; d < head_dim; ++d) {
-          destination[d] *= inverse;
-        }
+        scale_f32(destination, inverse, head_dim);
       }
     }
   });
@@ -207,33 +279,23 @@ Status paged_attention(const float* q, const float* key_cache,
              kv_head) *
             head_dim;
         const float* key = key_cache + cache_offset;
-        double score = 0.0;
-        for (long long d = 0; d < head_dim; ++d) {
-          score += static_cast<double>(query[d]) * key[d];
-        }
+        double score = dot_f32_precise(query, key, head_dim);
         score *= score_scale;
         const float* value = value_cache + cache_offset;
         if (score > maximum) {
           const double old_weight = std::exp(maximum - score);
           denominator = denominator * old_weight + 1.0;
-          for (long long d = 0; d < head_dim; ++d) {
-            destination[d] =
-                static_cast<float>(destination[d] * old_weight + value[d]);
-          }
+          replace_weighted(destination, value, old_weight, 1.0, head_dim);
           maximum = score;
         } else {
           const double weight = std::exp(score - maximum);
           denominator += weight;
-          for (long long d = 0; d < head_dim; ++d) {
-            destination[d] += static_cast<float>(value[d] * weight);
-          }
+          add_weighted(destination, value, weight, head_dim);
         }
       }
       if (denominator > 0.0) {
         const float inverse = static_cast<float>(1.0 / denominator);
-        for (long long d = 0; d < head_dim; ++d) {
-          destination[d] *= inverse;
-        }
+        scale_f32(destination, inverse, head_dim);
       }
     }
   }
@@ -263,7 +325,20 @@ Status mla_decode(const float* q, const float* kv_cache,
         static_cast<long long>(context) > max_blocks * page_size) {
       return Status::kInvalidArgument;
     }
-    for (long long head = 0; head < heads; ++head) {
+    for (long long position = 0; position < context; ++position) {
+      const int block =
+          block_table[request * max_blocks + position / page_size];
+      if (block < 0 || block >= cache_blocks) {
+        return Status::kInvalidArgument;
+      }
+    }
+  }
+  threading::parallel_ranges(batch * heads, 1,
+                             [&](long long begin, long long end, int) {
+    for (long long query_index = begin; query_index < end; ++query_index) {
+      const long long request = query_index / heads;
+      const long long head = query_index % heads;
+      const int context = context_lens[request];
       const float* query = q + (request * heads + head) * width;
       float* destination = out + (request * heads + head) * latent_dim;
       std::fill(destination, destination + latent_dim, 0.0f);
@@ -272,42 +347,29 @@ Status mla_decode(const float* q, const float* kv_cache,
       for (long long position = 0; position < context; ++position) {
         const int block =
             block_table[request * max_blocks + position / page_size];
-        if (block < 0 || block >= cache_blocks) {
-          return Status::kInvalidArgument;
-        }
         const float* item =
             kv_cache +
             (static_cast<long long>(block) * page_size + position % page_size) *
                 width;
-        double score = 0.0;
-        for (long long d = 0; d < width; ++d) {
-          score += static_cast<double>(query[d]) * item[d];
-        }
+        double score = dot_f32_precise(query, item, width);
         score *= score_scale;
         if (score > maximum) {
           const double old_weight = std::exp(maximum - score);
           denominator = denominator * old_weight + 1.0;
-          for (long long d = 0; d < latent_dim; ++d) {
-            destination[d] =
-                static_cast<float>(destination[d] * old_weight + item[d]);
-          }
+          replace_weighted(destination, item, old_weight, 1.0, latent_dim);
           maximum = score;
         } else {
           const double weight = std::exp(score - maximum);
           denominator += weight;
-          for (long long d = 0; d < latent_dim; ++d) {
-            destination[d] += static_cast<float>(item[d] * weight);
-          }
+          add_weighted(destination, item, weight, latent_dim);
         }
       }
       if (denominator > 0.0) {
         const float inverse = static_cast<float>(1.0 / denominator);
-        for (long long d = 0; d < latent_dim; ++d) {
-          destination[d] *= inverse;
-        }
+        scale_f32(destination, inverse, latent_dim);
       }
     }
-  }
+  });
   return Status::kOk;
 }
 

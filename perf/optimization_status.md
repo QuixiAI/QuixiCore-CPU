@@ -23,6 +23,15 @@ performance claim must add a focused optimization entry here.
 
 | Date | Kernel | Dtype / Format | Shape Set | Target | Baseline | Candidate | Decision | Evidence |
 |---|---|---|---|---|---:|---:|---|---|
+| 2026-07-22 | complete llama stored-format GEMV sweep | 23 non-Q4_0/Q8_0 stored formats / f32 activation | M1 N1024 K4096 | aarch64 NEON, 1 thread | same-run element decode 14.1884-17.3736 ms | direct packed block dot 0.3178-3.0547 ms | keep all direct routes; 4.68x-45.22x, CV 0.0079-0.0759 | `perf/results/2026-07-22/llama-quants-final-neon-t1-stable/` |
+| 2026-07-22 | GGUF three-pass GEMV sweep | Q4_K/Q5_K/Q6_K and IQ formats / f32 | M1 N1024 K4096 | aarch64 NEON, 1/6 threads | pass-0 8.3503-14.7039 / 1.7567-2.9806 ms | final 0.3137-2.5965 / 0.0890-0.5164 ms | keep direct packed-block dots and IQ4 table lookup; 4.0x-31.1x / 4.3x-22.5x over pass 0 | `perf/results/2026-07-22/opt3-{pass0,final}-t{1,6}/` |
+| 2026-07-22 | dense/quantized GEMM three-pass sweep | f32; Q4_0/K, Q6_K, IQ4_XS | M16/M128 N256/512/1024 K512/1024/1408 | aarch64 NEON, 1/6 threads | pass-0 dense 0.3282 / 0.1066 ms; Q4_K/Q6_K M16 1.3853-1.6778 / 0.3207-0.3802 ms | final dense 0.3319 / 0.0964 ms; Q4_K/Q6_K 0.9457-1.2375 / 0.2695-0.3599 ms | reject dense retile; keep generic panel SIMD and small-IQ4 canonical bypass | same |
+| 2026-07-22 | paged attention + MLA three-pass sweep | f32 | paged B2 HQ8 HKV2 S512 D64; MLA B2 H8 S512 DL64 DR16 | aarch64 NEON, 1/6 threads | pass-0 paged 0.1935 / 0.0562 ms; materialized MLA 0.2437 / 0.2453 ms | final paged 0.1126 / 0.0457 ms; online MLA 0.2033 / 0.0595 ms | keep online score tiles, SIMD f32 score dot, and request/head-parallel MLA; reject value-update SIMD | `perf/results/2026-07-22/{opt3-final,opt3-mla-final}-t{1,6}/` |
+| 2026-07-22 | fused decode projections three-pass sweep | Q4_0 / f32 | SwiGLU N1024 K1408; QKV HQ8 HKV2 D64 K1408 | aarch64 NEON, 1/6 threads | pass-0 0.2074/0.0774 and 0.0635/0.0335 ms | final 0.2094/0.0780 and 0.0677/0.0351 ms | keep paired gate/up semantic fusion; reject Q/K pairing and activation-load-sharing candidates; no new speedup claim | same |
+| 2026-07-22 | streaming LM-head three-pass sweep | Q4_0 / f32 | R2 V8192 H1024 | aarch64 NEON, 1/6 threads | pass-0 1.2227 / 0.3927 ms | final 0.8795 / 0.2353 ms | keep vocabulary-parallel selection and multi-row packed decode reuse; reject grain retune | same |
+| 2026-07-22 | grouped MoE three-pass sweep | Q4_0 / f32 | R64 E8 K256 I512 | aarch64 NEON, 1/6 threads | pass-0 1.2931 / 0.3810 ms | final 1.2636 / 0.3387 ms | keep paired gate/up block dot; reject shared float decode, activation reload, and output-tile candidates | same |
+| 2026-07-22 | norm-add-quant three-pass sweep | f32 / group int8 | R512 H4096 G128 | aarch64 NEON, 1/6 threads | pass-0 1.0311 / 0.2664 ms | final 0.6351 / 0.1804 ms | keep four-way sumsq, 16-byte quant pack, and four-way maximum reduction | same |
+| 2026-07-22 | FFT + Mamba three-pass sweep | f32 | B1 H2 L1024; B1 H2 L128 D32 | aarch64/portable, 1/6 threads | pass-0 FFT 0.0546/0.0569; Mamba 0.0973/0.0714 ms | final FFT 0.0550/0.0407; Mamba 0.0356/0.0342 ms | keep complex-f32/batch-one FFT and float recurrent state; reject normalization fusion and Mamba NEON | same |
 | 2026-07-22 | GGUF SIMD GEMV | Q4_0/K, Q5_K, Q6_K, IQ formats / f32 | M1 N4096 K4096; K/IQ N1024 | aarch64 NEON, 1/6 threads; x86 variants compile/test | scalar/element decode 2.8578 / 0.5892 ms Q4_0; 13.8664-15.1367 / 2.4908-3.6649 ms K/IQ | 1.1953 / 0.2798 ms Q4_0; 8.4295-14.6360 / 1.7739-3.1180 ms K/IQ | keep dispatch; Q4_0 2.39x/2.11x, every K/IQ format improves 1.03x-1.64x | `perf/results/2026-07-22/qgemv-allformats-final-t{1,6}/` |
 | 2026-07-22 | blocked dense/quantized GEMM | f32; Q4_0/K, Q6_K, IQ4_XS | M16/M128 N256/512/1024 K512/1024/1408 | aarch64 NEON, 1/6 threads | scalar dense 2.9337 / 3.0997 ms; canonical quantized 0.6082-14.1906 ms | dense 0.3336 / 0.1005 ms; packed quantized 0.3313-7.4150 ms | keep; dense 8.80x/30.85x, Q4_0 M128 1.84x/2.94x, K/IQ 6.75x-9.04x; bypass panel for small Q4_0 | `perf/results/2026-07-22/{optimization-plan-complete,prepacked-allformats-final2}-t{1,6}/` |
 | 2026-07-22 | online attention, fused decode, streaming selection, tiled MoE | f32 / Q4_0 | focused decode/prefill shapes | aarch64 NEON, 1/6 threads | materialized/decomposed 0.0397-1.7029 ms at 6 threads | 0.0391-0.4526 ms at 6 threads | keep online attention (2.96x), fused SwiGLU (1.31x), fused QKV+RoPE+KV (1.02x), and grouped MoE (3.76x) at six threads; LM-head tiling is allocation-bounded and neutral/noisy | `perf/results/2026-07-22/optimization-plan-complete-t{1,6}/` |
@@ -42,6 +51,136 @@ performance claim must add a focused optimization entry here.
 | 2026-07-07 | quant_gemv | q8_0 | quant_matmul m=1 (4096x4096, 8192x8192, 16384x4096) | aarch64 NEON DotProd | 4.314 ms | 0.301 ms | keep dotprod variant (14.4x, 51% of DRAM roofline) | `perf/results/2026-07-07/023619-quick/` |
 | 2026-07-07 | quant_gemv | q8_0 | quant_matmul m=1 (4096x4096, 8192x8192, 16384x4096) | aarch64 baseline flags | 4.319 ms | 4.441 ms | reject multi-acc candidate; keep plain loop as ref | `perf/results/2026-07-07/022305-quick/` |
 
+## 2026-07-22: complete llama.cpp stored-quant CPU paths
+
+Status: retained for canonical decode/GEMV and the pack formats expressible by
+the current public API. This closes compute coverage for the 25 stored llama.cpp
+weight formats; Q8_1 and Q8_K remain internal activation/dot-partner layouts,
+not public stored-weight formats.
+
+References inspected at implementation time: llama.cpp `2beefef68`, vLLM
+Marlin `4b594b4aa`, and QuixiCore-Metal `bc968fc`. The CPU application of those
+algorithms keeps canonical GGUF blocks at the API boundary, expands scales once
+per block/sub-block, performs packed table/nibble dots directly, and leaves
+ISA-specific panel packing behind `CpuPackedWeights`.
+
+Coverage added in this pass:
+
+- Canonical layouts and element decoders for Q1_0, Q2_0, IQ3_S, IQ2_S,
+  IQ1_M, and TQ1_0; NVFP4 is now the canonical 64-value/36-byte four-scale
+  layout. UE4M3 is decoded as unsigned, and IQ1_M uses the signed CPU grid
+  ordering rather than the GPU-transposed lookup table.
+- Canonical public packers for Q1_0, Q2_0, Q4_1, Q5_0, Q5_1, MXFP4, NVFP4,
+  and TQ1_0, alongside the existing Q4_0, Q8_0, and TQ2_0 packers. Exact golden
+  bytes pin scale placement and lane ordering. The current pack API has no
+  importance-matrix parameter, so IQ pack creation is deliberately not
+  claimed; imported IQ GGUF blocks are fully decoded and computed.
+- Direct aarch64 block-dot routes for every stored llama format. Classic Q4/Q5
+  and FP4 use NEON nibble/table lookup; K, IQ, and ternary formats consume
+  packed fields without a 256-float decode scratch block.
+- `qgemv_formats` now has a focused case for every stored format that was not
+  already covered by the dedicated Q4_0/Q8_0 cases.
+
+Three measured passes:
+
+| pass | candidate | result |
+|---|---|---|
+| 1 | element-at-a-time canonical decoder | correctness/performance baseline |
+| 2 | decode one complete block to aligned f32 scratch, then blocked dot | 0.93x-1.20x versus element decode; useful portable fallback, rejected as the optimized default |
+| 3 | direct packed NEON dot with block-local scale/table reuse | retained for all formats; TQ1_0 was further restructured into fixed 160/80/16-value base-3 sections after the branch/division version regressed |
+
+Primary stable result at one thread, M1 N1024 K4096: 0.3178-3.0547 ms versus
+14.1884-17.3736 ms for the same-binary independent element decoder,
+4.68x-45.22x faster. All target CVs are 0.0079-0.0759 and all embedded
+oracles pass; maximum reported relative error is 9.37e-4, within the benchmark
+tolerance. Six-thread artifacts are retained as scaling context, but the
+single-thread run is the performance claim because its complete format sweep
+passes the handbook variance gate.
+
+Correctness and portability:
+
+- Native Release CTest: 38/38.
+- ASan + UBSan + float-cast-overflow CTest: 37/37.
+- x86_64 cross-build and Rosetta CTest, including AVX2/AVX-512 sources: 32/32.
+- Focused canonical pack/unpack, arbitrary-payload block-dot, and forced-ref
+  tests: 7/7.
+
+Hardware: Apple M5 Max, 18 physical/logical cores (6 performance, 12
+efficiency), 128 GB, aarch64 NEON. OS/toolchain: macOS 26.5.2, Apple Clang
+21.0.0 (`clang-2100.1.1.101`). Primary command:
+`QUIXICORE_CPU_GGUF_GEMV_VARIANT=neon quixicore_cpu_bench --preset quick
+--kernel qgemv_formats --threads 1 --warmup 5 --iters 20 --min-sample-ms 30`.
+Working-tree label: `1d3dc15-dirty`. Raw pass artifacts are
+`perf/results/2026-07-22/llama-quants-pass{1-ref,2-blocked,3-neon}/`; the stable
+retained artifact is
+`perf/results/2026-07-22/llama-quants-final-neon-t1-stable/`.
+
+## 2026-07-22: three-pass optimization sweep
+
+Status: completed. Each of the eight planned kernel families received three
+measured optimization passes. A pass is an experiment, not an obligation to
+land code: candidates that missed correctness tolerances or regressed the
+focused benchmark were removed. The final tree contains only the retained
+pieces below and preserves the public contract and canonical GGUF bytes.
+
+| family | pass 1 | pass 2 | pass 3 | final decision |
+|---|---|---|---|---|
+| GGUF SIMD GEMV | direct packed dots for Q4_K, Q5_K, Q6_K, IQ4_NL, IQ4_XS | direct packed dots for IQ2_XXS, IQ2_XS, IQ3_XXS, IQ1_S | NEON table lookup/dot for IQ4_NL and IQ4_XS | keep all three |
+| dense + quantized GEMM | float dense accumulation and direct generic panel accumulation failed tolerances and were rejected | 64-column dense tile rejected; four-row NEON accumulation retained for generic panels | 8-row dense tile and 16-row panel unroll rejected; small IQ4 uses the now-faster canonical GEMV route | keep the original 4x32 dense tile plus pass-2 panel work |
+| paged attention + MLA | 16-score blockwise online softmax for advanced paged attention | NEON f32 score dot | vector primitives for plain attention/MLA retained; advanced value-update SIMD rejected | keep online tiles and score/MLA vectorization |
+| fused decode projections | paired Q4 gate/up block traversal | paired Q/K RoPE-row traversal was neutral and rejected | shared activation-load pair dot was neutral and rejected | keep pass-1 gate/up fusion; no new QKV speedup claim |
+| streaming LM-head | one vocabulary-parallel Q4 argmax region | reuse each decoded Q4 block across hidden rows | 64-token scheduling grain was neutral and reverted | keep passes 1-2 |
+| grouped MoE | paired Q4 gate/up block dot | shared float dequantization regressed about 2x; activation-load reuse was also rejected | two-output task tiles were neutral/regressive | keep pass-1 pair dot |
+| fused norm-add-quant | four-way f32 sum-of-squares accumulation | 16-code int8 narrowing/store | four-way normalized-maximum accumulation | keep all three |
+| FFT + Mamba | complex-f32 FFT and projection fused into recurrent state update | one fork-join for batch-one FFT; f32 Mamba state | inverse-normalization fusion and NEON Mamba state update regressed and were rejected | keep passes 1-2 |
+
+Pass-0 to final retained measurements:
+
+| path | pass 0 ms (1 / 6 threads) | final ms (1 / 6 threads) | result |
+|---|---:|---:|---|
+| Q4_K/Q5_K/Q6_K GEMV N1024 K4096 | 9.7727-14.7039 / 2.0937-2.9806 | 1.5332-2.1639 / 0.3278-0.4313 | 6.3x-8.7x / 6.4x-8.6x |
+| IQ GEMV N1024 K4096 | 8.3503-11.2778 / 1.7567-2.3323 | 0.3137-2.5965 / 0.0890-0.5164 | 4.0x-31.1x / 4.3x-22.5x |
+| Q4_K/Q6_K panel GEMM M16 N256 K1024 | 1.3853-1.6778 / 0.3207-0.3802 | 0.9457-1.2375 / 0.2695-0.3599 | 1.36x-1.47x / 1.06x-1.19x |
+| streaming LM-head R2 V8192 H1024 | 1.2227 / 0.3927 | 0.8795 / 0.2353 | 1.39x / 1.67x |
+| online paged attention B2 HQ8 HKV2 S512 D64 | 0.1935 / 0.0562 | 0.1126 / 0.0457 | 1.72x / 1.23x |
+| online MLA B2 H8 S512 DL64 DR16 | materialized 0.2437 / 0.2453 | 0.2033 / 0.0595 | 1.20x / 4.12x |
+| grouped MoE R64 E8 K256 I512 | 1.2931 / 0.3810 | 1.2636 / 0.3387 | 1.02x / 1.12x |
+| fused RMS-add-int8 R512 H4096 G128 | 1.0311 / 0.2664 | 0.6351 / 0.1804 | 1.62x / 1.48x |
+| FFT B1 H2 L1024 | 0.0546 / 0.0569 | 0.0550 / 0.0407 | parity / 1.40x |
+| recurrent Mamba B1 H2 L128 D32 | 0.0973 / 0.0714 | 0.0356 / 0.0342 | 2.73x / 2.09x |
+
+The final same-binary independent baselines show 6.83x-45.24x at one thread
+and 5.35x-30.41x at six threads for the listed K/IQ GEMVs; 1.42x/1.46x for
+streaming LM-head; 1.90x/4.67x for paged attention; 5.02x/7.21x for fused
+norm-add-int8; 32.89x/44.92x for FFT; 106.57x/115.19x for recurrent Mamba;
+and 1.20x/4.12x for online MLA. Fused projections remain
+semantic/materialization wins: the final run
+is at parity at one thread and noisy from 0.90x to 1.21x at six threads, so no
+new projection speedup is asserted.
+
+- Correctness: final native Release CTest passes 38/38; ASan + UBSan +
+  float-cast-overflow passes 37/37; and the x86_64 cross-build, including the
+  AVX2/AVX-512 sources, passes 32/32 under Rosetta. Every timed case's embedded
+  oracle passed. Final maximum relative errors are 1.19e-5 or lower for K/IQ
+  GEMV, 3.39e-4 for paged attention, 3.46e-4 for Mamba, and 3.03e-2 for
+  dequantized int8 norm output.
+- Hardware: Apple M5 Max, 18 logical/physical cores (6 performance, 12
+  efficiency), 128 GB; aarch64 NEON with DotProd and I8MM.
+- OS/toolchain: macOS 26.5.2; Apple Clang 21.0.0
+  (`clang-2100.1.1.101`); CMake Release.
+- Settings: one or six threads, OS-default affinity/frequency, 5 warmups, 30
+  timed samples, 10 ms minimum sample. Final target CV range is
+  0.0047-0.1260 at one thread and 0.0160-0.1600 at six threads.
+- Command: `quixicore_cpu_bench --preset quick --kernel
+  qgemv_formats,prerequisites,optimization_plan,ported_ops --threads {1,6}
+  --warmup 5 --iters 30 --min-sample-ms 10`.
+- Working-tree label: `1d3dc15-dirty`.
+- Raw results: `perf/results/2026-07-22/opt3-pass0-t{1,6}/`,
+  `opt3-pass1-fixed-t{1,6}/`, `opt3-pass2-fixed-t{1,6}/`,
+  `opt3-pass3-fixed-t{1,6}/`, and `opt3-final-t{1,6}/` beneath the same date
+  directory. MLA evidence is in `opt3-mla-final-t{1,6}/`. Rejected pass
+  artifacts are retained beside them.
+
 ## 2026-07-22: planned P0-P2 CPU kernel batch
 
 Status: implemented and retained with focused correctness, portability, and
@@ -53,11 +192,12 @@ Implementation summary:
 - GGUF weight-only GEMV now dispatches Q4_0, Q4_K, Q5_K, Q6_K, IQ4_NL,
   IQ4_XS, IQ2_XXS, IQ2_XS, IQ3_XXS, and IQ1_S through runtime-selected
   blocked/NEON/AVX2/AVX-512 functions. Q4_0 has a direct packed-nibble SIMD
-  path; the other formats decode one block to aligned scratch and SIMD-dot it.
+  path; the retained NEON route now also evaluates every listed K/IQ format
+  directly from its packed block, including table-lookup SIMD dots for IQ4.
 - Dense GEMM uses 4-by-32 output tiling. Prepared quantized GEMM reuses each
   packed weight block across the activation-row tile for every listed GGUF
-  format. Q4_0/Q8_0 M<64 retains the faster canonical GEMV route; larger M
-  and K/IQ formats use the panel kernel.
+  format. Q4_0/Q8_0/IQ4 M<64 retains the faster canonical GEMV route; larger
+  M and K formats use the panel kernel.
 - Basic, advanced, FP8, absorbed-MLA, and paged-attention paths use online
   max/sum recurrence and do not materialize score vectors. Output rescaling is
   only performed when a new running maximum is observed.

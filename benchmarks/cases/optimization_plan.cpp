@@ -843,6 +843,141 @@ CaseDecl make_paged_attention(long long batch, long long query_heads,
   return decl;
 }
 
+struct MlaBuffers {
+  std::vector<float> q, cache, target, reference, scores;
+  std::vector<int> block_table, context;
+  long long cache_blocks = 0;
+  long long batch = 0;
+  long long heads = 0;
+  long long sequence = 0;
+  long long latent = 0;
+  long long rope = 0;
+  long long page = 0;
+  long long max_blocks = 0;
+};
+
+void materialized_mla(MlaBuffers& b) {
+  const long long width = b.latent + b.rope;
+  const double factor = 1.0 / std::sqrt(static_cast<double>(width));
+  for (long long request = 0; request < b.batch; ++request) {
+    for (long long head = 0; head < b.heads; ++head) {
+      const long long query_index = request * b.heads + head;
+      const float* query = b.q.data() + query_index * width;
+      float* scores = b.scores.data() + query_index * b.sequence;
+      double maximum = -std::numeric_limits<double>::infinity();
+      for (long long position = 0; position < b.sequence; ++position) {
+        const int block =
+            b.block_table[request * b.max_blocks + position / b.page];
+        const float* item =
+            b.cache.data() +
+            (static_cast<long long>(block) * b.page + position % b.page) *
+                width;
+        double score = 0.0;
+        for (long long dim = 0; dim < width; ++dim) {
+          score += static_cast<double>(query[dim]) * item[dim];
+        }
+        scores[position] = static_cast<float>(score * factor);
+        maximum = std::max(maximum, static_cast<double>(scores[position]));
+      }
+      double denominator = 0.0;
+      for (long long position = 0; position < b.sequence; ++position) {
+        scores[position] =
+            static_cast<float>(std::exp(scores[position] - maximum));
+        denominator += scores[position];
+      }
+      float* output = b.reference.data() + query_index * b.latent;
+      std::fill_n(output, b.latent, 0.0f);
+      for (long long position = 0; position < b.sequence; ++position) {
+        const int block =
+            b.block_table[request * b.max_blocks + position / b.page];
+        const float* item =
+            b.cache.data() +
+            (static_cast<long long>(block) * b.page + position % b.page) *
+                width;
+        const double probability = scores[position] / denominator;
+        for (long long dim = 0; dim < b.latent; ++dim) {
+          output[dim] += static_cast<float>(item[dim] * probability);
+        }
+      }
+    }
+  }
+}
+
+CaseDecl make_mla(long long batch, long long heads, long long sequence,
+                  long long latent, long long rope, long long page) {
+  CaseDecl decl;
+  decl.kernel = "optimization_plan";
+  decl.variant = "online_mla_B" + std::to_string(batch) + "_H" +
+                 std::to_string(heads) + "_S" + std::to_string(sequence) +
+                 "_DL" + std::to_string(latent) + "_DR" +
+                 std::to_string(rope);
+  decl.shape = {{"batch", batch}, {"heads", heads}, {"sequence", sequence},
+                {"latent", latent}, {"rope", rope}};
+  decl.notes = "online MLA with SIMD dot/update versus materialized scores";
+  decl.make = [=]() {
+    auto b = std::make_shared<MlaBuffers>();
+    b->batch = batch;
+    b->heads = heads;
+    b->sequence = sequence;
+    b->latent = latent;
+    b->rope = rope;
+    b->page = page;
+    b->max_blocks = (sequence + page - 1) / page;
+    b->cache_blocks = batch * b->max_blocks;
+    const long long width = latent + rope;
+    b->q.resize(static_cast<std::size_t>(batch * heads * width));
+    b->cache.resize(
+        static_cast<std::size_t>(b->cache_blocks * page * width));
+    b->target.resize(static_cast<std::size_t>(batch * heads * latent));
+    b->reference.resize(b->target.size());
+    b->scores.resize(
+        static_cast<std::size_t>(batch * heads * sequence));
+    b->block_table.resize(
+        static_cast<std::size_t>(batch * b->max_blocks));
+    b->context.assign(static_cast<std::size_t>(batch),
+                      static_cast<int>(sequence));
+    Rng rng;
+    for (float& value : b->q) value = 0.2f * rng.next();
+    for (float& value : b->cache) value = 0.2f * rng.next();
+    for (long long request = 0; request < batch; ++request) {
+      for (long long block = 0; block < b->max_blocks; ++block) {
+        b->block_table[request * b->max_blocks + block] =
+            static_cast<int>(request * b->max_blocks + block);
+      }
+    }
+    CaseBody body;
+    body.target = [b]() {
+      if (quixicore_cpu::mla_decode(
+              b->q.data(), b->cache.data(), b->block_table.data(),
+              b->context.data(), b->target.data(), b->cache_blocks, b->batch,
+              b->heads, b->latent, b->rope, b->page, b->max_blocks, 0.0f) !=
+          Status::kOk) {
+        throw std::runtime_error("mla_decode failed");
+      }
+      do_not_optimize(b->target.data());
+    };
+    body.baselines.emplace_back("materialized_scores", [b]() {
+      materialized_mla(*b);
+      do_not_optimize(b->reference.data());
+    });
+    body.check = [b]() {
+      if (quixicore_cpu::mla_decode(
+              b->q.data(), b->cache.data(), b->block_table.data(),
+              b->context.data(), b->target.data(), b->cache_blocks, b->batch,
+              b->heads, b->latent, b->rope, b->page, b->max_blocks, 0.0f) !=
+          Status::kOk) {
+        throw std::runtime_error("mla_decode failed");
+      }
+      materialized_mla(*b);
+      return check_arrays(b->target.data(), b->reference.data(),
+                          b->batch * b->heads * b->latent,
+                          Tolerance{3e-5, 3e-4});
+    };
+    return body;
+  };
+  return decl;
+}
+
 }  // namespace
 
 void build_optimization_plan_cases(const BuildCtx& ctx,
@@ -856,6 +991,7 @@ void build_optimization_plan_cases(const BuildCtx& ctx,
     out.push_back(make_mamba(1, 1, 16, 8));
     out.push_back(make_moe(8, 2, 32, 16));
     out.push_back(make_paged_attention(1, 2, 1, 32, 16, 16));
+    out.push_back(make_mla(1, 2, 32, 16, 8, 16));
     return;
   }
   out.push_back(make_dense(16, 512, 512));
@@ -866,12 +1002,14 @@ void build_optimization_plan_cases(const BuildCtx& ctx,
   out.push_back(make_mamba(1, 2, 128, 32));
   out.push_back(make_moe(64, 8, 256, 512));
   out.push_back(make_paged_attention(2, 8, 2, 512, 64, 16));
+  out.push_back(make_mla(2, 8, 512, 64, 16, 16));
   if (ctx.preset == Preset::kComprehensive) {
     out.push_back(make_dense(128, 1024, 1024));
     out.push_back(make_fft(1, 4, 4096));
     out.push_back(make_mamba(1, 4, 512, 64));
     out.push_back(make_moe(128, 16, 1024, 1024));
     out.push_back(make_paged_attention(4, 32, 8, 4096, 128, 16));
+    out.push_back(make_mla(4, 32, 4096, 128, 32, 16));
   }
 }
 

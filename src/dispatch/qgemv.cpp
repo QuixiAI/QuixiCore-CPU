@@ -15,6 +15,7 @@
 
 #include "kernels/quantization/qgemv.h"
 #include "kernels/quantization/qgemv_w8a8.h"
+#include "kernels/quantization/gguf_pack_ref.h"
 #include "kernels/quantization/gguf_ref.h"
 #include "quixicore_cpu/cpu_features.h"
 
@@ -174,8 +175,14 @@ Status qgemv_pack(QuantFormat format, const float* weights, long long n,
     return Status::kInvalidArgument;
   }
   if (format != QuantFormat::kQ8_0 && format != QuantFormat::kQ4_0 &&
-      format != QuantFormat::kTQ2_0) {
+      format != QuantFormat::kTQ2_0 &&
+      !quant::gguf_pack_supported(format)) {
     return Status::kUnsupportedFormat;
+  }
+  if (quant::gguf_pack_supported(format)) {
+    return quant::gguf_pack_ref(format, weights, n, k, packed)
+               ? Status::kOk
+               : Status::kInvalidArgument;
   }
   if (format == QuantFormat::kTQ2_0) {
     // The public pack operation does not expose the optional dequantized tensor.

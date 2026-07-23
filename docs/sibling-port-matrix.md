@@ -43,9 +43,10 @@ coverage remains deliberately narrower and is indexed in `perf/`.
 The public format enum and decoder cover the packed formats found across the
 sibling quantization trees:
 
-- GGUF: q4_0, q4_1, q5_0, q5_1, q8_0, q2_K through q6_K, IQ4_NL, IQ4_XS,
-  IQ2_XXS, IQ2_XS, IQ3_XXS, and IQ1_S.
-- Integer/custom: U4B8, U4, HQQ, BitNet ternary, and TQ2_0.
+- GGUF/llama.cpp: Q1_0, Q2_0, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q2_K
+  through Q6_K, IQ2_XXS, IQ2_XS, IQ3_XXS, IQ3_S, IQ2_S, IQ1_S, IQ1_M,
+  IQ4_NL, IQ4_XS, TQ1_0, and TQ2_0.
+- Integer/custom: U4B8, U4, HQQ, and BitNet ternary.
 - Floating/microscaled: E4M3/E5M2 FP8, block/raw FP8, E2M1 FP4, MXFP8,
   NVFP4, MXFP4, and both MXFP6 encodings.
 - Runtime quantization: symmetric/asymmetric int8, signed grouped int4,
@@ -53,10 +54,11 @@ sibling quantization trees:
   fused SiLU/gate quantization, MXFP8 and NVFP4 producers, raw E2M1 packing,
   ternary statistics, and TurboQuant KV coding.
 
-`qgemv_pack` deliberately authors only q8_0, q4_0, and TQ2_0. The other
-entries consume sibling/GGUF packed bytes and have exact decoder coverage;
-this distinction avoids claiming a packer that the sibling contract does not
-provide.
+`qgemv_pack` authors Q1_0, Q2_0, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, MXFP4,
+NVFP4, TQ1_0, and TQ2_0. The other entries consume sibling/GGUF packed bytes
+and have exact decoder coverage. IQ authorship is not claimed because the
+public pack API has no importance-matrix input; runtime inference decode and
+GEMV/GEMM remain covered.
 
 ## Semantic collapses
 

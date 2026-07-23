@@ -57,6 +57,7 @@ add_library(quixicore_cpu STATIC
   kernels/quantization/qgemv_fused_ref.cpp
   kernels/quantization/qgemv_rows_ref.cpp
   kernels/quantization/gguf_ref.cpp
+  kernels/quantization/gguf_pack_ref.cpp
   kernels/quantization/qgemv_gguf_blocked.cpp
   kernels/quantization/qgemv_gguf_neon.cpp
   kernels/quantization/quantization_ref.cpp
