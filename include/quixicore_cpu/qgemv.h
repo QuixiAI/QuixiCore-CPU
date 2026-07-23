@@ -50,6 +50,15 @@ enum class QuantFormat {
   kTQ1_0,
 };
 
+// llama.cpp-compatible activation/intermediate formats. These are kept
+// separate from QuantFormat because Q8_1 and Q8_K are dot-product partners,
+// not GGUF model-storage formats.
+enum class QuantActivationFormat {
+  kQ8_0,
+  kQ8_1,
+  kQ8_K,
+};
+
 // Quantized GEMV, QuixiCore family contract: out = dequantize(wq) @ x with
 // full-precision activations (f32 on CPU) and f32 accumulation. Matches the
 // sibling `qgemv` semantics and oracle; q8_0 and q4_0 block layouts are
@@ -62,15 +71,34 @@ Status qgemv_packed_size(QuantFormat format, long long n, long long k,
                          size_t* size);
 
 // Quantize row-major f32 weights (n x k) into the packed format. Packing is
-// currently defined for q1_0/q2_0/q4_0/q4_1/q5_0/q5_1/q8_0, MXFP4,
-// NVFP4, tq1_0, and tq2_0. Other formats remain decode-compatible with GGUF
-// inputs and return kUnsupportedFormat from this entry point.
+// currently defined for q1_0/q2_0/q4_0/q4_1/q5_0/q5_1/q8_0, Q2_K-Q6_K,
+// IQ formats, MXFP4, NVFP4, tq1_0, and tq2_0. Importance-matrix IQ formats
+// use uniform importance here; qgemv_pack_weighted accepts calibration data.
 Status qgemv_pack(QuantFormat format, const float* weights, long long n,
                   long long k, void* packed);
+
+// Importance-aware authoring for llama.cpp IQ formats. importance is an n x k
+// row-major non-negative finite matrix. For formats that do not use an
+// importance matrix this is equivalent to qgemv_pack. Passing nullptr selects
+// uniform importance and is also what qgemv_pack uses.
+Status qgemv_pack_weighted(QuantFormat format, const float* weights,
+                           const float* importance, long long n, long long k,
+                           void* packed);
 
 // Dequantize packed weights back to row-major f32 (n x k).
 Status qgemv_unpack(QuantFormat format, const void* packed, long long n,
                     long long k, float* weights);
+
+// Packed size, quantization, and dequantization for row-major activation
+// matrices. The byte layouts are canonical llama.cpp block_q8_0, block_q8_1,
+// and block_q8_K layouts. k must be divisible by the selected block size.
+Status quant_activation_packed_size(QuantActivationFormat format, long long n,
+                                    long long k, size_t* size);
+Status quant_activation_pack(QuantActivationFormat format, const float* input,
+                             long long n, long long k, void* packed);
+Status quant_activation_unpack(QuantActivationFormat format,
+                               const void* packed, long long n, long long k,
+                               float* output);
 
 // y = dequantize(wq) @ x with packed W (n x k), f32 x (k), f32 y (n).
 // Deterministic. The kernel variant is resolved once per process from
@@ -79,6 +107,15 @@ Status qgemv_unpack(QuantFormat format, const void* packed, long long n,
 // activation-quantizing experiments are deliberately not selectable here.
 Status qgemv(QuantFormat format, const void* packed, const float* x, float* y,
              long long n, long long k);
+
+// y = dequantize(wq) @ dequantize(xq). This portable contract route accepts
+// all supported stored-weight formats and all activation formats above. ISA
+// implementations may fuse the two block decoders behind the same semantics.
+Status qgemv_quantized_activation(QuantFormat weight_format,
+                                  const void* packed_weights,
+                                  QuantActivationFormat activation_format,
+                                  const void* packed_activation, float* y,
+                                  long long n, long long k);
 
 // Compute only selected packed rows. row_ids has row_count entries in [0,n);
 // y is compact [row_count] in the same order. This is the packed projection

@@ -1,0 +1,6 @@
+source	revision	path
+llama.cpp	2beefef68	/Users/eric/llama.cpp
+QuixiCore-Metal	bc968fc	/Users/eric/QuixiCore/QuixiCore-Metal
+QuixiCore-XPU	67c70fe	/Users/eric/QuixiCore/QuixiCore-XPU
+QuixiCore-CUDA	7519b317	/Users/eric/QuixiCore/QuixiCore-CUDA
+QuixiCore-ROCm	16c7fd63	/Users/eric/QuixiCore/QuixiCore-ROCm

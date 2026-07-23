@@ -404,24 +404,16 @@ float dequant(QuantFormat format, const std::uint8_t* block, int column) {
       const std::uint8_t* quants = block + 2;
       const int block32 = column >> 5;
       const int position = column & 31;
-      const int half = position >> 4;
-      const int word = position & 15;
-      const int which = word >> 2;
-      const int element = word & 3;
-      const std::uint8_t* local_quants = quants + 4 * block32 + 2 * half;
+      const int group8 = position >> 3;
+      const int element = position & 7;
       const std::uint16_t high = u16_at(block + 34 + 2 * block32);
       const float scale = half_at(block) * float(2 * ((high >> 12) & 7) + 1);
-      const float minimum = scale *
-          ((high & 0x8000) ? (-1.0f - kDelta) : (-1.0f + kDelta));
-      const std::uint32_t high_index = high >> (6 * half);
-      const std::uint32_t grid_index =
-          (which >> 1) == 0
-              ? (local_quants[0] | ((high_index << 8) & 0x700))
-              : (local_quants[1] | ((high_index << 5) & 0x700));
-      const std::uint32_t byte =
-          (iq_tables::iq1s_grid_gpu[grid_index] >> (8 * element)) & 255;
-      const std::uint32_t value = which & 1 ? byte >> 4 : byte & 15;
-      return scale * float(value) + minimum;
+      const float delta = (high & 0x8000) ? -kDelta : kDelta;
+      const int grid_index = quants[4 * block32 + group8] |
+          (((high >> (3 * group8)) & 7) << 8);
+      const auto value = static_cast<std::int8_t>(
+          (iq_tables::iq1s_grid[grid_index] >> (8 * element)) & 255);
+      return scale * (static_cast<float>(value) + delta);
     }
     case QuantFormat::kIQ1_M: {
       static constexpr float kDelta = 0.125f;

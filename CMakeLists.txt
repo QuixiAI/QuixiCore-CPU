@@ -30,6 +30,7 @@ add_library(quixicore_cpu STATIC
   src/runtime/cpu_features_x86_64.cpp
   src/runtime/cpu_features_aarch64.cpp
   src/memory/workspace.cpp
+  src/memory/quant_contract.cpp
   src/memory/packed_weights.cpp
   src/threading/thread_pool.cpp
   kernels/activations/activations_ref.cpp
@@ -43,6 +44,7 @@ add_library(quixicore_cpu STATIC
   kernels/collectives/collectives_ref.cpp
   kernels/linear_attention/linear_attention_ref.cpp
   kernels/linear_attention/linear_attention_extended_ref.cpp
+  kernels/linear_attention/llama_recurrent_ref.cpp
   kernels/matmul/dense_gemm_ref.cpp
   kernels/matmul/matmul_extended_ref.cpp
   kernels/moe/moe_ref.cpp
@@ -54,6 +56,8 @@ add_library(quixicore_cpu STATIC
   kernels/norms/rms_norm_neon.cpp
   kernels/optimizers/adamw_ref.cpp
   kernels/quantization/qgemv_ref.cpp
+  kernels/quantization/activation_quant_ref.cpp
+  kernels/quantization/iq_pack_ref.cpp
   kernels/quantization/qgemv_fused_ref.cpp
   kernels/quantization/qgemv_rows_ref.cpp
   kernels/quantization/gguf_ref.cpp
@@ -61,6 +65,7 @@ add_library(quixicore_cpu STATIC
   kernels/quantization/qgemv_gguf_blocked.cpp
   kernels/quantization/qgemv_gguf_neon.cpp
   kernels/quantization/quantization_ref.cpp
+  kernels/quantization/quant_import_ref.cpp
   kernels/quantization/microscale_ref.cpp
   kernels/quantization/turboquant_ref.cpp
   kernels/quantization/qgemv_neon.cpp
@@ -89,8 +94,11 @@ add_library(quixicore_cpu STATIC
   kernels/ssm/ssm_extended_ref.cpp
   kernels/utils/utils_ref.cpp
   kernels/utils/utils_extended_ref.cpp
+  kernels/utils/tensor_ops_ref.cpp
+  kernels/utils/float_storage_ref.cpp
   kernels/utils/kd_ref.cpp
   kernels/vision/vision_ref.cpp
+  kernels/vision/conv_pool_ref.cpp
 )
 add_library(QuixiCoreCPU::quixicore_cpu ALIAS quixicore_cpu)
 
@@ -112,6 +120,20 @@ endif()
 
 quixicore_cpu_report_isa_support()
 quixicore_cpu_target_arch(QUIXICORE_CPU_TARGET_ARCH)
+
+quixicore_cpu_add_isa_sources(quixicore_cpu ISA fp16
+  SOURCES kernels/utils/float_storage_neon.cpp)
+if(QUIXICORE_CPU_ISA_FP16_SUPPORTED)
+  target_compile_definitions(quixicore_cpu
+    PRIVATE QUIXICORE_CPU_HAVE_FLOAT_STORAGE_NEON_FP16=1)
+endif()
+
+quixicore_cpu_add_isa_sources(quixicore_cpu ISA f16c
+  SOURCES kernels/utils/float_storage_f16c.cpp)
+if(QUIXICORE_CPU_ISA_F16C_SUPPORTED)
+  target_compile_definitions(quixicore_cpu
+    PRIVATE QUIXICORE_CPU_HAVE_FLOAT_STORAGE_F16C=1)
+endif()
 
 quixicore_cpu_add_isa_sources(quixicore_cpu ISA dotprod
   SOURCES kernels/quantization/qgemv_dotprod.cpp
@@ -185,6 +207,13 @@ endif()
 if(QUIXICORE_CPU_BUILD_TESTS)
   enable_testing()
 
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME parity_manifest
+      COMMAND ${Python3_EXECUTABLE}
+              ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_parity_manifest.py)
+  endif()
+
   add_executable(test_backend_status tests/smoke/test_backend_status.cpp)
   target_link_libraries(test_backend_status PRIVATE QuixiCoreCPU::quixicore_cpu)
   add_test(NAME backend_status COMMAND test_backend_status)
@@ -196,6 +225,10 @@ if(QUIXICORE_CPU_BUILD_TESTS)
   add_executable(test_workspace tests/unit/test_workspace.cpp)
   target_link_libraries(test_workspace PRIVATE QuixiCoreCPU::quixicore_cpu)
   add_test(NAME workspace COMMAND test_workspace)
+
+  add_executable(test_float_storage tests/correctness/test_float_storage.cpp)
+  target_link_libraries(test_float_storage PRIVATE QuixiCoreCPU::quixicore_cpu)
+  add_test(NAME float_storage COMMAND test_float_storage)
 
   add_executable(test_qgemv tests/correctness/test_qgemv.cpp)
   target_link_libraries(test_qgemv PRIVATE QuixiCoreCPU::quixicore_cpu)
@@ -226,9 +259,45 @@ if(QUIXICORE_CPU_BUILD_TESTS)
   set_tests_properties(gguf_formats_forced_ref PROPERTIES
     ENVIRONMENT "QUIXICORE_CPU_GGUF_GEMV_VARIANT=ref")
 
+  add_executable(test_quant_activation
+    tests/correctness/test_quant_activation.cpp)
+  target_link_libraries(test_quant_activation
+    PRIVATE QuixiCoreCPU::quixicore_cpu)
+  add_test(NAME quant_activation COMMAND test_quant_activation)
+
   add_executable(test_quantization tests/correctness/test_quantization.cpp)
   target_link_libraries(test_quantization PRIVATE QuixiCoreCPU::quixicore_cpu)
   add_test(NAME quantization COMMAND test_quantization)
+
+  add_executable(test_quant_contract
+    tests/correctness/test_quant_contract.cpp)
+  target_link_libraries(test_quant_contract
+    PRIVATE QuixiCoreCPU::quixicore_cpu)
+  target_compile_definitions(test_quant_contract PRIVATE
+    QUIXICORE_CPU_TESTDATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/testdata")
+  target_include_directories(test_quant_contract
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME quant_contract COMMAND test_quant_contract)
+
+  add_executable(test_quant_import
+    tests/correctness/test_quant_import.cpp)
+  target_link_libraries(test_quant_import
+    PRIVATE QuixiCoreCPU::quixicore_cpu)
+  add_test(NAME quant_import COMMAND test_quant_import)
+
+  add_executable(test_tensor_ops tests/correctness/test_tensor_ops.cpp)
+  target_link_libraries(test_tensor_ops PRIVATE QuixiCoreCPU::quixicore_cpu)
+  add_test(NAME tensor_ops COMMAND test_tensor_ops)
+
+  add_executable(test_conv_pool tests/correctness/test_conv_pool.cpp)
+  target_link_libraries(test_conv_pool PRIVATE QuixiCoreCPU::quixicore_cpu)
+  add_test(NAME conv_pool COMMAND test_conv_pool)
+
+  add_executable(test_llama_recurrent
+    tests/correctness/test_llama_recurrent.cpp)
+  target_link_libraries(test_llama_recurrent
+    PRIVATE QuixiCoreCPU::quixicore_cpu)
+  add_test(NAME llama_recurrent COMMAND test_llama_recurrent)
 
   add_executable(test_lowbit tests/correctness/test_lowbit.cpp)
   target_link_libraries(test_lowbit PRIVATE QuixiCoreCPU::quixicore_cpu)

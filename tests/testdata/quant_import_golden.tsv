@@ -1,0 +1,11 @@
+importer	case	source_fields	canonical_layout	canonical_codes_hex	canonical_metadata
+awq_u4	group8_reverse_lane	qweight_u32_le=76543210;qzeros_u32_le=33333333;scales=0.25;group_size=8	uint4_affine	0000000044444444111111115555555522222222666666663333333377777777	scale=0.25;zero=3;group_size=8;lane_order=0,4,1,5,2,6,3,7
+gptq_u4	v1_asymmetric	qweight_u32_le=76543210;qzeros_u32_le=22222222;scales=0.5;group_size=8;desc_act=0	uint4_affine	10325476	scale=0.5;zero=3;group_size=8
+gptq_u4	v2_act_order	qweight_u32_le=01234567;qzeros_u32_le=44444444;scales=0.125;group_size=4;g_idx=1,0;desc_act=1	uint4_affine	67452301	scale=0.125;zero=4;group_size=4;act_order=4,5,6,7,0,1,2,3
+autoround_u4	affine_target	format=int4;bits=4;sym=0;group_size=8;scale=0.25;zero=5	uint4_affine	50fa	scale=0.25;zero=5;group_size=8
+autoround_fp8	e4m3_target	format=fp8_e4m3;scale=1	fp8_e4m3fn	00383c7e	scale=1;scale_mode=tensor
+autoround_mxfp4	mx_target	format=mxfp4;scale_code=127	mxfp4_e2m1_e8m0	a2700000000000000000000000000000	scale_code=127;group_size=32
+autoround_mxfp8	mx_target	format=mxfp8;scale_code=127	mxfp8_e4m3_e8m0	38b83cbc00000000000000000000000000000000000000000000000000000000	scale_code=127;group_size=32
+autoround_nvfp4	nv_target	format=nvfp4;global_scale=0.5;local_scale_code=64	nvfp4_e2m1_e4m3	a270000000000000	global_scale=0.5;local_scale_code=64;group_size=16
+smoothquant_w8a8	per_channel_symmetric	weights_i8=81,c0,00,7f;weight_scale=0.25;activation_scale=0.125	int8_symmetric	81c0007f	weight_scale=0.25;activation_scale=0.125;scale_mode=channel
+bitnet_i2_s	ternary_import	scale_fp16_le=003c;codes=6455555555555555	bitnet_ternary	003c6455555555555555	group_size=32;code_map=0:-1,1:0,2:1

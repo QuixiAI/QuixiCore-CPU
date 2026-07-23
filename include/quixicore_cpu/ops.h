@@ -13,9 +13,47 @@ enum class Float8Format;
 // row-major and all reductions accumulate in f32 or better.
 
 enum class GeluApprox { kErf, kTanh };
-enum class GluMode { kSwiGlu, kGeGlu, kReGlu, kGlu };
+enum class UnaryOp {
+  kAbs,
+  kSign,
+  kNegate,
+  kStep,
+  kTanh,
+  kElu,
+  kRelu,
+  kSigmoid,
+  kGelu,
+  kGeluQuick,
+  kSilu,
+  kHardSwish,
+  kHardSigmoid,
+  kExp,
+  kExpm1,
+  kSoftplus,
+  kGeluErf,
+  kXiElu,
+  kFloor,
+  kCeil,
+  kRound,
+  kTrunc,
+};
+struct XiEluParams {
+  float alpha_n = 0.0f;
+  float alpha_p = 0.0f;
+  float beta = 0.0f;
+  float eps = 0.0f;
+};
+enum class GluMode {
+  kSwiGlu,
+  kGeGlu,
+  kReGlu,
+  kGlu,
+  kGeGluErf,
+  kGeGluQuick,
+};
 enum class LinearActivation { kNone, kGeluErf, kGeluTanh, kSilu };
 enum class MoeScoring { kSoftmax, kSigmoid, kSqrtSoftplus };
+enum class PoolMode { kAverage, kMaximum };
 
 Status gelu(const float* x, float* y, long long count,
             GeluApprox approx = GeluApprox::kErf);
@@ -23,6 +61,13 @@ Status gelu_backward(const float* grad_out, const float* x, float* grad_in,
                      long long count,
                      GeluApprox approx = GeluApprox::kErf);
 Status silu(const float* x, float* y, long long count);
+Status silu_backward(const float* grad_out, const float* x, float* grad_in,
+                     long long count);
+
+// All GGML_UNARY_OP_* f32 semantics. XiEluParams are the unconstrained public
+// ggml_xielu parameters; the kernel applies llama's softplus constraints.
+Status unary(const float* x, float* y, long long count, UnaryOp op,
+             XiEluParams xielu = {});
 
 // x is [rows, 2*dim] (gate half followed by value half); y is [rows, dim].
 Status glu(const float* x, float* y, long long rows, long long dim,
@@ -30,6 +75,10 @@ Status glu(const float* x, float* y, long long rows, long long dim,
 Status glu_backward(const float* grad_out, const float* x, float* grad_in,
                     long long rows, long long dim,
                     GluMode mode = GluMode::kSwiGlu);
+// Exact GGML_GLU_OP_SWIGLU_OAI split-input rule:
+// silu(min(gate,limit), alpha) * (clamp(value,-limit,limit) + 1).
+Status swiglu_oai(const float* gate, const float* value, float* y,
+                  long long rows, long long dim, float alpha, float limit);
 
 // Numerically stable row-wise softmax over [rows, dim]. x and y may alias.
 Status softmax(const float* x, float* y, long long rows, long long dim);
@@ -669,6 +718,225 @@ Status dropout_backward(const float* grad_out, float* grad_in,
                         long long count, float probability,
                         std::uint32_t seed);
 Status add(const float* x, const float* y, float* out, long long count);
+Status add_scalar(const float* x, float value, float* out, long long count);
+Status subtract(const float* x, const float* y, float* out, long long count);
+Status multiply(const float* x, const float* y, float* out, long long count);
+Status divide(const float* x, const float* y, float* out, long long count);
+Status scale(const float* x, float value, float* out, long long count);
+Status clamp(const float* x, float minimum, float maximum, float* out,
+             long long count);
+Status square(const float* x, float* out, long long count);
+Status square_root(const float* x, float* out, long long count);
+Status logarithm(const float* x, float* out, long long count);
+Status sine(const float* x, float* out, long long count);
+Status cosine(const float* x, float* out, long long count);
+Status leaky_relu(const float* x, float negative_slope, float* out,
+                  long long count);
+Status fill(float* out, long long count, float value);
+Status arange(float start, float step, float* out, long long count);
+Status cumulative_sum(const float* x, float* out, long long rows,
+                      long long dim);
+Status reduce_sum_all(const float* x, float* out, long long count);
+Status reduce_mean(const float* x, float* out, long long rows,
+                   long long dim);
+Status count_equal(const std::int32_t* x, const std::int32_t* y,
+                   long long count, long long* out);
+Status argsort(const float* x, int* indices, long long rows, long long dim,
+               bool descending = false);
+// Inputs are [outer,a_axis,inner] and [outer,b_axis,inner].
+Status concat(const float* a, const float* b, float* out, long long outer,
+              long long a_axis, long long b_axis, long long inner);
+Status repeat_2d(const float* x, float* out, long long source_rows,
+                 long long source_cols, long long output_rows,
+                 long long output_cols);
+Status repeat_backward_2d(const float* grad_out, float* grad_in,
+                          long long source_rows, long long source_cols,
+                          long long output_rows, long long output_cols);
+Status diag_embed(const float* diagonal, float* out, long long batch,
+                  long long dim);
+Status diag_mask(const float* x, float* out, long long rows, long long cols,
+                 long long past, bool use_negative_infinity);
+Status triangular_fill(const float* x, float* out, long long rows,
+                       long long cols, long long diagonal, bool upper,
+                       float fill_value);
+Status roll_2d(const float* x, float* out, long long rows, long long cols,
+               long long row_shift, long long col_shift);
+Status pad_2d(const float* x, float* out, long long rows, long long cols,
+              long long top, long long bottom, long long left,
+              long long right, float value = 0.0f);
+Status pad_reflect_1d(const float* x, float* out, long long rows,
+                      long long length, long long left, long long right);
+Status upscale_nearest_2d(const float* x, float* out, long long channels,
+                          long long input_height, long long input_width,
+                          long long scale_height, long long scale_width);
+Status group_norm(const float* x, const float* weight, const float* bias,
+                  float* out, long long batch, long long channels,
+                  long long spatial, long long groups, float eps = 1e-5f);
+Status l2_normalize(const float* x, float* out, long long rows, long long dim,
+                    float eps = 1e-12f);
+Status softmax_backward(const float* grad_out, const float* softmax_output,
+                        float* grad_in, long long rows, long long dim);
+Status rope_backward(const float* grad_out, float* grad_in, long long tokens,
+                     long long heads, long long head_dim, float base,
+                     long long pos0);
+Status outer_product(const float* x, const float* y, float* out,
+                     long long rows, long long cols);
+Status set_rows(const float* source, const int* row_ids, float* destination,
+                long long source_rows, long long destination_rows,
+                long long row_width);
+Status accumulate(float* destination, const float* source, long long count,
+                  float alpha = 1.0f);
+Status sgd(float* parameters, const float* gradients, long long count,
+           float learning_rate, float weight_decay = 0.0f);
+Status add_id(const float* x, const float* rows, const int* ids, float* out,
+              long long count, long long row_count, long long width);
+Status tensor_copy(const float* source, float* destination, long long count);
+// Copy base to output (unless aliased), then set a strided 4-D view from a
+// contiguous update. Destination strides and offset are measured in elements;
+// stride 0 is implicitly one.
+Status tensor_set_4d(const float* base, const float* update, float* output,
+                     long long output_count, long long n0, long long n1,
+                     long long n2, long long n3, long long stride1,
+                     long long stride2, long long stride3,
+                     long long offset);
+// NCHW image -> [N,OH,OW,C*KH*KW]. OH/OW follow the standard convolution
+// formula from the supplied stride, padding, and dilation.
+Status im2col_2d(const float* image, float* columns, long long batch,
+                 long long channels, long long input_height,
+                 long long input_width, long long kernel_height,
+                 long long kernel_width, long long stride_height,
+                 long long stride_width, long long pad_height,
+                 long long pad_width, long long dilation_height = 1,
+                 long long dilation_width = 1);
+Status col2im_2d(const float* columns, float* image, long long batch,
+                 long long channels, long long input_height,
+                 long long input_width, long long kernel_height,
+                 long long kernel_width, long long stride_height,
+                 long long stride_width, long long pad_height,
+                 long long pad_width, long long dilation_height = 1,
+                 long long dilation_width = 1);
+// Scatter-add [time_in,channels,kernel] columns to [channels,time_out].
+Status col2im_1d(const float* columns, float* signal, long long time_in,
+                 long long channels, long long kernel, long long stride,
+                 long long padding);
+Status im2col_3d(const float* volume, float* columns, long long batch,
+                 long long channels, long long input_depth,
+                 long long input_height, long long input_width,
+                 long long kernel_depth, long long kernel_height,
+                 long long kernel_width, long long stride_depth,
+                 long long stride_height, long long stride_width,
+                 long long pad_depth, long long pad_height,
+                 long long pad_width, long long dilation_depth = 1,
+                 long long dilation_height = 1,
+                 long long dilation_width = 1);
+// weights are [out_channels,in_channels,KH,KW], input/output are NCHW.
+Status conv2d(const float* input, const float* weights, const float* bias,
+              float* output, long long batch, long long input_channels,
+              long long output_channels, long long input_height,
+              long long input_width, long long kernel_height,
+              long long kernel_width, long long stride_height = 1,
+              long long stride_width = 1, long long pad_height = 0,
+              long long pad_width = 0, long long dilation_height = 1,
+              long long dilation_width = 1);
+// Depthwise weights are [channels,multiplier,KH,KW].
+Status depthwise_conv2d(
+    const float* input, const float* weights, const float* bias, float* output,
+    long long batch, long long channels, long long multiplier,
+    long long input_height, long long input_width, long long kernel_height,
+    long long kernel_width, long long stride_height = 1,
+    long long stride_width = 1, long long pad_height = 0,
+    long long pad_width = 0, long long dilation_height = 1,
+    long long dilation_width = 1);
+Status conv3d(const float* input, const float* weights, const float* bias,
+              float* output, long long batch, long long input_channels,
+              long long output_channels, long long input_depth,
+              long long input_height, long long input_width,
+              long long kernel_depth, long long kernel_height,
+              long long kernel_width, long long stride_depth = 1,
+              long long stride_height = 1, long long stride_width = 1,
+              long long pad_depth = 0, long long pad_height = 0,
+              long long pad_width = 0, long long dilation_depth = 1,
+              long long dilation_height = 1,
+              long long dilation_width = 1);
+// Transposed-convolution weights are [in_channels,out_channels,...].
+Status conv_transpose_1d(const float* input, const float* weights,
+                         const float* bias, float* output, long long batch,
+                         long long input_channels, long long output_channels,
+                         long long input_length, long long kernel,
+                         long long stride = 1, long long padding = 0);
+Status conv_transpose_2d(
+    const float* input, const float* weights, const float* bias, float* output,
+    long long batch, long long input_channels, long long output_channels,
+    long long input_height, long long input_width, long long kernel_height,
+    long long kernel_width, long long stride_height = 1,
+    long long stride_width = 1, long long pad_height = 0,
+    long long pad_width = 0);
+Status pool1d(const float* input, float* output, long long batch,
+              long long channels, long long input_length, long long kernel,
+              long long stride, long long padding,
+              PoolMode mode = PoolMode::kAverage);
+Status pool2d(const float* input, float* output, long long batch,
+              long long channels, long long input_height,
+              long long input_width, long long kernel_height,
+              long long kernel_width, long long stride_height,
+              long long stride_width, long long pad_height,
+              long long pad_width, PoolMode mode = PoolMode::kAverage);
+Status pool2d_backward(
+    const float* input, const float* grad_out, float* grad_in, long long batch,
+    long long channels, long long input_height, long long input_width,
+    long long kernel_height, long long kernel_width, long long stride_height,
+    long long stride_width, long long pad_height, long long pad_width,
+    PoolMode mode = PoolMode::kAverage);
+Status timestep_embedding(const float* timesteps, float* output,
+                          long long count, long long dim,
+                          float max_period = 10000.0f);
+Status solve_lower_triangular(const float* a, const float* b, float* x,
+                              long long batch, long long n,
+                              long long right_hand_sides);
+Status get_relative_position(const float* table, float* output,
+                             long long width, long long dim);
+Status add_relative_position_2d(
+    const float* attention, const float* relative_height,
+    const float* relative_width, float* output, long long batches,
+    long long query_height, long long query_width, long long key_height,
+    long long key_width);
+// NHWC image/window layouts, with zero padding at the lower/right edges.
+Status window_partition(const float* image, float* windows, long long height,
+                        long long width, long long channels,
+                        long long window_size);
+Status window_unpartition(const float* windows, float* image, long long height,
+                          long long width, long long channels,
+                          long long window_size);
+// llama.cpp-compatible recurrent attention layouts. Token tensors are
+// [sequences,tokens_per_sequence,heads,head_dim], while state tensors are
+// [sequences,heads,head_dim,head_dim]. Initial and final state may alias.
+Status gated_linear_attention(
+    const float* key, const float* value, const float* query,
+    const float* gate, const float* initial_state, float* output,
+    float* final_state, long long sequences, long long tokens_per_sequence,
+    long long heads, long long head_dim, float scale = 1.0f);
+Status rwkv_wkv6(const float* key, const float* value,
+                 const float* receptance, const float* time_first,
+                 const float* time_decay, const float* initial_state,
+                 float* output, float* final_state, long long sequences,
+                 long long tokens_per_sequence, long long heads,
+                 long long head_dim);
+Status rwkv_wkv7(const float* receptance, const float* decay,
+                 const float* key, const float* value, const float* a,
+                 const float* b, const float* initial_state, float* output,
+                 float* final_state, long long sequences,
+                 long long tokens_per_sequence, long long heads,
+                 long long head_dim);
+// DeepSeek-V4 hyper-connection stages. The fixed hyper-connection width is 4.
+// mixes/base are [tokens,24]/[24], comb is [tokens,source,destination].
+Status dsv4_hc_comb(const float* mixes, const float* scale,
+                    const float* base, float* comb, long long tokens,
+                    float eps, int iterations);
+Status dsv4_hc_pre(const float* x, const float* weights, float* output,
+                   long long tokens, long long embedding);
+Status dsv4_hc_post(const float* x, const float* residual,
+                    const float* post, const float* comb, float* output,
+                    long long tokens, long long embedding);
 Status cross_entropy(const float* logits, const int* target, float* loss,
                      long long rows, long long vocab);
 Status cross_entropy_forward(const float* logits, const int* target,

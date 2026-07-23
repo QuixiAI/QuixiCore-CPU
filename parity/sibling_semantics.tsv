@@ -1,0 +1,16 @@
+area	cpu_surface	status
+activations_elementwise	gelu/glu/add/softmax	mapped
+norms_norm_quant	rms_norm/layer_norm/norm_add_quant	mapped
+dense_matmul_projections	dense_gemm/linear_epilogue/decode_swiglu	mapped
+quantized_matmul	qgemv/qgemm/lowbit/fp8/fp4	mapped
+dense_variable_attention	attention/varlen/qk_norm_rope	mapped
+decode_attention_caches	paged_attention/mla/cache_ops	mapped
+sampling_logit_processing	sampling/transforms	mapped
+beam_speculative_decode	beam/speculative/eagle	mapped
+embedding_multimodal	embedding/multimodal	mapped
+moe	moe_routing/grouped_gemm/finalize	mapped
+linear_attention	linear_attention/gdn	mapped
+state_space_convolution	selective_scan/mamba/fft_convolution	mapped
+training_utility	cross_entropy/dropout/fwht/adamw	mapped
+vision_sparse_serving	vision/indexer/sparse_masks	mapped
+collectives_parallel_composites	collectives/composite_gemm	mapped

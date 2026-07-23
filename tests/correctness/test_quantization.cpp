@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -19,6 +20,33 @@ bool close(float a, float b, float tolerance = 1e-5f) {
 bool require(bool value, const char* message) {
   if (!value) std::cerr << "FAIL: " << message << '\n';
   return value;
+}
+
+std::uint8_t float8_encode_oracle(float value,
+                                  quixicore_cpu::Float8Format format) {
+  using namespace quixicore_cpu;
+  if (std::isnan(value))
+    return format == Float8Format::kE4M3FN ? 0x7f : 0x7d;
+  const bool negative = std::signbit(value);
+  const float magnitude = std::fabs(value);
+  if (magnitude == 0.0f) return negative ? 0x80 : 0;
+  const int maximum_code = format == Float8Format::kE4M3FN ? 0x7e : 0x7b;
+  const float maximum = float8_decode(maximum_code, format);
+  if (!std::isfinite(magnitude) || magnitude >= maximum)
+    return static_cast<std::uint8_t>(maximum_code | (negative ? 0x80 : 0));
+  int best = 0;
+  float best_error = std::numeric_limits<float>::infinity();
+  for (int code = 0; code <= maximum_code; ++code) {
+    const float candidate =
+        float8_decode(static_cast<std::uint8_t>(code), format);
+    const float error = std::fabs(candidate - magnitude);
+    if (error < best_error ||
+        (error == best_error && (best & 1) != 0 && (code & 1) == 0)) {
+      best = code;
+      best_error = error;
+    }
+  }
+  return static_cast<std::uint8_t>(best | (negative ? 0x80 : 0));
 }
 
 }  // namespace
@@ -35,6 +63,39 @@ int main() {
                 "e4m3 normal decode");
   ok &= require(close(float8_decode(0x3e, Float8Format::kE5M2), 1.5f),
                 "e5m2 normal decode");
+  for (Float8Format format : {Float8Format::kE4M3FN,
+                              Float8Format::kE5M2}) {
+    const int maximum_code =
+        format == Float8Format::kE4M3FN ? 0x7e : 0x7b;
+    for (int code = 0; code <= maximum_code; ++code) {
+      const float decoded =
+          float8_decode(static_cast<std::uint8_t>(code), format);
+      ok &= require(float8_encode(decoded, format) == code,
+                    "fp8 positive code identity");
+      ok &= require(float8_encode(-decoded, format) == (code | 0x80),
+                    "fp8 negative code identity");
+      if (code != maximum_code) {
+        const float next = float8_decode(
+            static_cast<std::uint8_t>(code + 1), format);
+        const float midpoint = (decoded + next) * 0.5f;
+        const int even = (code & 1) == 0 ? code : code + 1;
+        ok &= require(float8_encode(midpoint, format) == even,
+                      "fp8 midpoint ties to even");
+      }
+    }
+    std::uint32_t state = 0x9e3779b9U;
+    for (int sample = 0; sample < 10000; ++sample) {
+      state ^= state << 13;
+      state ^= state >> 17;
+      state ^= state << 5;
+      const float value =
+          (static_cast<float>(state >> 8) / 8388608.0f - 1.0f) *
+          (format == Float8Format::kE4M3FN ? 512.0f : 65536.0f);
+      ok &= require(float8_encode(value, format) ==
+                        float8_encode_oracle(value, format),
+                    "fp8 direct encoder matches exhaustive oracle");
+    }
+  }
 
   const std::vector<float> x = {-2.0f, -0.5f, 0.0f, 2.0f,
                                 1.0f,  2.0f,  3.0f, 4.0f};

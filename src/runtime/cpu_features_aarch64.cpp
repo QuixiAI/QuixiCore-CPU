@@ -17,6 +17,9 @@
 #include <sys/sysctl.h>
 #elif defined(__linux__)
 #include <sys/auxv.h>
+#if __has_include(<asm/hwcap.h>)
+#include <asm/hwcap.h>
+#endif
 #elif defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -50,6 +53,7 @@ CpuFeatures detect_cpu_features() {
   f.neon = true;
 
 #if defined(__APPLE__)
+  f.fp16 = sysctl_flag("hw.optional.arm.FEAT_FP16");
   f.dotprod = sysctl_flag("hw.optional.arm.FEAT_DotProd");
   f.i8mm = sysctl_flag("hw.optional.arm.FEAT_I8MM");
   f.sve = sysctl_flag("hw.optional.arm.FEAT_SVE");
@@ -64,6 +68,9 @@ CpuFeatures detect_cpu_features() {
   // the header cannot name is reported unavailable rather than guessed.
 #if defined(HWCAP_ASIMDDP)
   f.dotprod = (hwcap & HWCAP_ASIMDDP) != 0;
+#endif
+#if defined(HWCAP_ASIMDHP)
+  f.fp16 = (hwcap & HWCAP_ASIMDHP) != 0;
 #endif
 #if defined(HWCAP_SVE)
   f.sve = (hwcap & HWCAP_SVE) != 0;
@@ -81,6 +88,10 @@ CpuFeatures detect_cpu_features() {
   f.sme2 = (hwcap2 & HWCAP2_SME2) != 0;
 #endif
 #elif defined(_WIN32)
+#if defined(PF_ARM_V82_FP16_INSTRUCTIONS_AVAILABLE)
+  f.fp16 =
+      IsProcessorFeaturePresent(PF_ARM_V82_FP16_INSTRUCTIONS_AVAILABLE) != 0;
+#endif
 #if defined(PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE)
   f.dotprod =
       IsProcessorFeaturePresent(PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE) != 0;

@@ -53,6 +53,13 @@ bool run_format(quixicore_cpu::QuantFormat format) {
     REQUIRE(info.layout == layout);
     REQUIRE(info.rows == n && info.columns == k);
     REQUIRE(info.contract_bytes == packed_bytes);
+    REQUIRE(info.prepared_version == 1);
+    REQUIRE(info.column_tile == info.block_size);
+    REQUIRE(info.panel_alignment == 64);
+    REQUIRE(info.prepared_bytes == info.panel_bytes);
+    REQUIRE(info.memory_amplification >= 1.0);
+    REQUIRE(std::string(cpu_prepared_isa_name(info.required_isa)) !=
+            "unknown");
     REQUIRE(std::memcmp(weights.contract_data(), packed.data(), packed_bytes) ==
             0);
     REQUIRE(reinterpret_cast<std::uintptr_t>(weights.panel_data()) % 64 == 0);

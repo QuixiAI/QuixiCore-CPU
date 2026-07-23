@@ -1,0 +1,14 @@
+layout	case	element_bytes_hex	scale_bytes_hex	parameters	decoded
+int4_symmetric	low_nibble_first	9870	-	scale=0.5	-4,-3.5,0,3.5
+uint4_affine	fractional_zero_point	50fa	-	scale=0.25;zero=5	-1.25,0,1.25,2.5
+int8_symmetric	twos_complement	81c0007f	-	scale=0.25	-31.75,-16,0,31.75
+int8_affine	signed_code_integer_zero	8000407f	-	scale=0.125;zero=-32	-12,4,12,19.875
+fp8_e4m3fn	finite_and_saturation	00383c7e	-	scale=1	0,1,1.5,448
+fp8_e5m2	finite_and_saturation	003c3e7b	-	scale=1	0,1,1.5,57344
+fp4_e2m1	low_nibble_first	107a	-	scale=1	0,0.5,-1,6
+mxfp8_e4m3_e8m0	one_k32_block	38b83cbc00000000000000000000000000000000000000000000000000000000	7f	scale=1	1,-1,1.5,-1.5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+mxfp4_e2m1_e8m0	one_k32_block	a2700000000000000000000000000000	7f	scale=1	1,-1,0,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+nvfp4_e2m1_e4m3	one_k16_block	a270000000000000	40	global=0.5	1,-1,0,6,0,0,0,0,0,0,0,0,0,0,0,0
+bitnet_ternary	one_k32_block	003c6455555555555555	-	scale=1	-1,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+turboquant_key	unsigned_two_bit_k32	e400000000000000	-	bits=2;scale=0.5;zero=-1	-0.5,0,0.5,1,-0.5,-0.5,-0.5,-0.5,-0.5,-0.5,-0.5,-0.5,-0.5,-0.5,-0.5,-0.5,-0.5,-0.5,-0.5,-0.5,-0.5,-0.5,-0.5,-0.5,-0.5,-0.5,-0.5,-0.5,-0.5,-0.5,-0.5,-0.5
+turboquant_value	two_bit_centroids_k32	e400000000000000	-	bits=2;scale=2;centroids=-1,-0.25,0.25,1	-2,-0.5,0.5,2,-2,-2,-2,-2,-2,-2,-2,-2,-2,-2,-2,-2,-2,-2,-2,-2,-2,-2,-2,-2,-2,-2,-2,-2,-2,-2,-2,-2

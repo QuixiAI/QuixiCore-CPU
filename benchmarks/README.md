@@ -112,12 +112,29 @@ failed oracle produces an `error` row and a nonzero process exit:
   runtime-selected CPU row panel and warmed caller-owned workspace, checked
   and timed against canonical-layout QGEMM. Both M16 prefill and the Q4_0 M128
   reuse case are covered; weight preparation is outside the timed region.
+- `quant_lifecycle` — importance-aware IQ authoring, canonical Q8_0/Q8_1/Q8_K
+  activation packing, and the quantized-activation GEMV contract route. Unlike
+  reusable-weight compute cases, conversion is deliberately inside timing.
+- `quant_import` — canonical INT4/U4/INT8/FP8/FP4/MX/NV/BitNet conversion,
+  AWQ/GPTQ/SmoothQuant checkpoint normalization, and canonical-to-CPU panel
+  preparation. Conversion and preparation are deliberately inside timing.
+- `llama_parity` — convolution, recurrent GLA, DSV4 hyper-connections, and the
+  complete unary/GLU selectors (softplus and OpenAI SwiGLU throughput cases)
+  from the exhaustive llama.cpp CPU operation audit.
 - `optimization_plan` — focused before/after cases for blocked dense GEMM,
   fused Q4_0 SwiGLU projection, fused QKV+RoPE+KV insertion, streaming
   quantized LM-head argmax, radix-2 FFT convolution, recurrent Mamba2,
   grouped Q4_0 MoE SwiGLU, and online paged attention. Each baseline is the
   replaced scalar, materialized, or asymptotically slower formulation in the
   same binary.
+- `float_storage` — FP16 and BF16 storage round trips plus typed BF16 softmax.
+  Scalar, manual-unroll, explicit-staging, threaded, and runtime-gated native
+  conversion routes provide the three-pass dtype optimization evidence.
+- `quant_formats`, `quant_activation`, `quant_gemv_matrix`,
+  `quant_gemm_matrix`, `quant_fusions`, `quant_serving`, `quant_kv`, and
+  `bitnet_matrix` — M0 pass-0 families that relabel existing checked reference
+  cases. Later milestones extend or replace these entries with direct format-
+  specialized cases. Registration is not a support or speedup claim.
 
 ## Adding A Kernel Case
 

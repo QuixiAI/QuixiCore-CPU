@@ -45,6 +45,20 @@ bool has_public_packer(quixicore_cpu::QuantFormat format) {
     case QuantFormat::kQ4_1:
     case QuantFormat::kQ5_0:
     case QuantFormat::kQ5_1:
+    case QuantFormat::kQ2_K:
+    case QuantFormat::kQ3_K:
+    case QuantFormat::kQ4_K:
+    case QuantFormat::kQ5_K:
+    case QuantFormat::kQ6_K:
+    case QuantFormat::kIQ4_NL:
+    case QuantFormat::kIQ4_XS:
+    case QuantFormat::kIQ2_XXS:
+    case QuantFormat::kIQ2_XS:
+    case QuantFormat::kIQ3_XXS:
+    case QuantFormat::kIQ3_S:
+    case QuantFormat::kIQ2_S:
+    case QuantFormat::kIQ1_S:
+    case QuantFormat::kIQ1_M:
     case QuantFormat::kMXFP4:
     case QuantFormat::kNVFP4:
     case QuantFormat::kTQ1_0:
@@ -52,6 +66,15 @@ bool has_public_packer(quixicore_cpu::QuantFormat format) {
     default:
       return false;
   }
+}
+
+std::uint64_t fnv1a(const std::vector<std::uint8_t>& bytes) {
+  std::uint64_t hash = 14695981039346656037ULL;
+  for (std::uint8_t byte : bytes) {
+    hash ^= byte;
+    hash *= 1099511628211ULL;
+  }
+  return hash;
 }
 
 }  // namespace
@@ -334,6 +357,15 @@ int main() {
                            unpacked.data()) == Status::kOk);
       for (float value : unpacked) {
         REQUIRE(std::isfinite(value));
+        if (std::fabs(value - 1.0f) > 0.04f) {
+          std::cerr << "format " << static_cast<int>(fixture.format)
+                    << " reconstructed one as " << value << " bytes";
+          for (std::size_t byte = 0; byte < std::min<std::size_t>(10, packed.size());
+               ++byte) {
+            std::cerr << ' ' << static_cast<int>(packed[byte]);
+          }
+          std::cerr << '\n';
+        }
         REQUIRE(std::fabs(value - 1.0f) <= 0.04f);
       }
     }
@@ -381,6 +413,108 @@ int main() {
   tq1[52] = 0x00;
   tq1[53] = 0x3c;
   REQUIRE(require_all_ones_golden(QuantFormat::kTQ1_0, 256, tq1));
+
+  // Exact hashes emitted by llama.cpp 2beefef68. The deterministic corpus
+  // deliberately crosses positive/negative group extrema and pins every
+  // scale field, high-bit plane, and packed lane without embedding kilobytes
+  // of opaque fixture data in this test.
+  struct PackerGolden {
+    QuantFormat format;
+    long long block;
+    std::uint64_t ones_hash;
+    std::uint64_t corpus_hash;
+  };
+  const PackerGolden packer_goldens[] = {
+      {QuantFormat::kQ2_K, 256, 0x62c7801c1734cd1eULL,
+       0x2a6050be7f7dfca6ULL},
+      {QuantFormat::kQ3_K, 256, 0x76c4f9d78417cffdULL,
+       0x4edb68e00cda4748ULL},
+      {QuantFormat::kQ4_K, 256, 0x9a2643be5292a867ULL,
+       0xed1dc2b564108a7eULL},
+      {QuantFormat::kQ5_K, 256, 0x69d9da1868cdd93fULL,
+       0x63ac29da0f12bbf4ULL},
+      {QuantFormat::kQ6_K, 256, 0xc0c3893bba5691c9ULL,
+       0xbe291576881f412cULL},
+      {QuantFormat::kIQ4_NL, 32, 0x889983e233ef3995ULL,
+       0x630af09dae58f6e0ULL},
+      {QuantFormat::kIQ4_XS, 256, 0xe086263c51ba86b9ULL,
+       0x6bf4d39729315322ULL},
+  };
+  for (const PackerGolden& golden : packer_goldens) {
+    std::size_t bytes = 0;
+    REQUIRE(qgemv_packed_size(golden.format, 1, golden.block, &bytes) ==
+            Status::kOk);
+    std::vector<float> values(static_cast<std::size_t>(golden.block), 1.0f);
+    std::vector<std::uint8_t> packed(bytes);
+    REQUIRE(qgemv_pack(golden.format, values.data(), 1, golden.block,
+                       packed.data()) == Status::kOk);
+    REQUIRE(fnv1a(packed) == golden.ones_hash);
+    for (long long index = 0; index < golden.block; ++index) {
+      values[static_cast<std::size_t>(index)] =
+          static_cast<float>((index * 37) % 257 - 128) / 91.0f +
+          static_cast<float>(index % 7 - 3) / 256.0f;
+    }
+    REQUIRE(qgemv_pack(golden.format, values.data(), 1, golden.block,
+                       packed.data()) == Status::kOk);
+    const std::uint64_t corpus_hash = fnv1a(packed);
+    // llama.cpp's floating reference Q6_K search has one known target-specific
+    // tie on this corpus: AppleClang x86_64 selects the equally good alternate
+    // lattice below while aarch64 selects the source-oracle hash in the table.
+    const bool q6_k_x86_tie = golden.format == QuantFormat::kQ6_K &&
+                              corpus_hash == 0x40b1e44705b532dcULL;
+    if (corpus_hash != golden.corpus_hash && !q6_k_x86_tie) {
+      std::cerr << "golden corpus mismatch for format "
+                << static_cast<int>(golden.format) << ": got 0x" << std::hex
+                << corpus_hash << " expected 0x" << golden.corpus_hash
+                << std::dec << '\n';
+    }
+    REQUIRE(corpus_hash == golden.corpus_hash || q6_k_x86_tie);
+  }
+
+  // The importance-aware I-quant packers are not byte-canonical (multiple
+  // lattice choices can be equally good), so pin their public lifecycle,
+  // determinism, and reconstruction quality. Their byte layouts are also
+  // cross-checked against llama.cpp's dequantizers during parity updates.
+  const QuantFormat weighted_formats[] = {
+      QuantFormat::kIQ2_XXS, QuantFormat::kIQ2_XS,
+      QuantFormat::kIQ3_XXS, QuantFormat::kIQ3_S,
+      QuantFormat::kIQ2_S,   QuantFormat::kIQ1_S,
+      QuantFormat::kIQ1_M,
+  };
+  std::vector<float> weighted_source(256), importance(256);
+  for (int index = 0; index < 256; ++index) {
+    weighted_source[index] = std::sin(0.071f * index) +
+                             0.3f * std::cos(0.019f * index);
+    importance[index] =
+        0.25f + static_cast<float>((index * 17) % 29) / 11.0f;
+  }
+  for (QuantFormat format : weighted_formats) {
+    std::size_t bytes = 0;
+    REQUIRE(qgemv_packed_size(format, 1, 256, &bytes) == Status::kOk);
+    std::vector<std::uint8_t> first(bytes), second(bytes);
+    REQUIRE(qgemv_pack_weighted(format, weighted_source.data(),
+                                importance.data(), 1, 256, first.data()) ==
+            Status::kOk);
+    REQUIRE(qgemv_pack_weighted(format, weighted_source.data(),
+                                importance.data(), 1, 256, second.data()) ==
+            Status::kOk);
+    REQUIRE(first == second);
+    std::vector<float> reconstructed(256);
+    REQUIRE(qgemv_unpack(format, first.data(), 1, 256,
+                         reconstructed.data()) == Status::kOk);
+    double mean_squared_error = 0.0;
+    for (int index = 0; index < 256; ++index) {
+      const double error = weighted_source[index] - reconstructed[index];
+      mean_squared_error += error * error;
+    }
+    REQUIRE(mean_squared_error / 256.0 < 0.09);
+  }
+  importance[7] = -1.0f;
+  std::vector<std::uint8_t> invalid_importance_bytes(66);
+  REQUIRE(qgemv_pack_weighted(
+              QuantFormat::kIQ2_XXS, weighted_source.data(), importance.data(),
+              1, 256, invalid_importance_bytes.data()) ==
+          Status::kInvalidArgument);
 
   for (const Fixture& fixture : fixtures) {
     if (!has_public_packer(fixture.format)) continue;

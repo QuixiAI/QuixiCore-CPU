@@ -13,6 +13,7 @@ namespace quixicore_cpu {
 struct CpuFeatures {
   // x86_64
   bool fma = false;
+  bool f16c = false;
   bool avx2 = false;
   bool avx512f = false;
   bool avx512_vnni = false;
@@ -22,6 +23,7 @@ struct CpuFeatures {
 
   // aarch64
   bool neon = false;
+  bool fp16 = false;
   bool dotprod = false;
   bool i8mm = false;
   bool sve = false;

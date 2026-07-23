@@ -20,6 +20,26 @@ float horizontal(__m512 value) {
 
 void gguf_gemv_avx512(QuantFormat format, const void* packed, const float* x,
                       float* y, long long n, long long k) {
+  // The direct AVX2 packed-block path avoids a 256-float scratch decode and is
+  // faster for these formats on current x86 CPUs. AVX-512 retains its wider
+  // generic decoded fallback until a dedicated direct kernel is measured.
+  switch (format) {
+    case QuantFormat::kQ4_0:
+    case QuantFormat::kQ4_1:
+    case QuantFormat::kQ5_0:
+    case QuantFormat::kQ5_1:
+    case QuantFormat::kQ2_K:
+    case QuantFormat::kQ3_K:
+    case QuantFormat::kQ4_K:
+    case QuantFormat::kQ5_K:
+    case QuantFormat::kQ6_K:
+    case QuantFormat::kIQ4_NL:
+    case QuantFormat::kIQ4_XS:
+      gguf_gemv_avx2(format, packed, x, y, n, k);
+      return;
+    default:
+      break;
+  }
   long long block_size = 0;
   std::size_t block_bytes = 0;
   (void)gguf_format_info(format, &block_size, &block_bytes);

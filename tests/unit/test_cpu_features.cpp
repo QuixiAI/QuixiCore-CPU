@@ -22,12 +22,14 @@ int main() {
   REQUIRE(!features.avx2);
   REQUIRE(!features.avx512f);
   REQUIRE(!features.amx_tile);
+  if (features.fp16) REQUIRE(features.neon);
 #endif
 
 #if defined(__x86_64__) || defined(_M_X64)
   REQUIRE(!features.neon);
   REQUIRE(!features.sve);
   REQUIRE(!features.sme);
+  REQUIRE(!features.fp16);
   if (features.avx512_vnni) {
     REQUIRE(features.avx512f);
   }

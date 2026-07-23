@@ -216,6 +216,9 @@ Status qgemm_prepacked(const CpuPackedWeights& weights, const float* x,
                        float* y, long long m, Workspace* workspace) {
   if (!weights.ready()) return Status::kInvalidArgument;
   const CpuPackedWeightsInfo info = weights.info();
+  // Canonical lifecycle panels are prepared for later format-specialized M2
+  // consumers. Never reinterpret them through the legacy GGUF QuantFormat.
+  if (info.has_canonical_layout) return Status::kUnsupportedFormat;
   if (!detail::valid_product({m, info.rows, info.columns})) {
     return Status::kInvalidShape;
   }

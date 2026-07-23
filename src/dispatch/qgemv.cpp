@@ -8,11 +8,16 @@
 #include "quixicore_cpu/quantization.h"
 
 #include <climits>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <new>
+#include <stdexcept>
+#include <vector>
 
+#include "kernels/quantization/activation_quant.h"
 #include "kernels/quantization/qgemv.h"
 #include "kernels/quantization/qgemv_w8a8.h"
 #include "kernels/quantization/gguf_pack_ref.h"
@@ -147,6 +152,36 @@ Status packed_size(QuantFormat format, long long n, long long k,
   return Status::kOk;
 }
 
+Status validate_activation(QuantActivationFormat format, long long n,
+                           long long k) {
+  long long block_size = 0;
+  std::size_t ignored = 0;
+  if (!quant::activation_format_info(format, &block_size, &ignored)) {
+    return Status::kUnsupportedFormat;
+  }
+  if (n <= 0 || k <= 0 || k % block_size != 0 || n > LLONG_MAX / k ||
+      n > LLONG_MAX / (k / block_size)) {
+    return Status::kInvalidShape;
+  }
+  return Status::kOk;
+}
+
+Status activation_packed_size(QuantActivationFormat format, long long n,
+                              long long k, size_t* size) {
+  long long block_size = 0;
+  size_t block_bytes = 0;
+  if (!quant::activation_format_info(format, &block_size, &block_bytes)) {
+    return Status::kUnsupportedFormat;
+  }
+  size_t blocks = 0;
+  if (!checked_mul(static_cast<size_t>(n),
+                   static_cast<size_t>(k / block_size), &blocks) ||
+      !checked_mul(blocks, block_bytes, size)) {
+    return Status::kInvalidShape;
+  }
+  return Status::kOk;
+}
+
 }  // namespace
 
 Status qgemv_packed_size(QuantFormat format, long long n, long long k,
@@ -163,6 +198,12 @@ Status qgemv_packed_size(QuantFormat format, long long n, long long k,
 
 Status qgemv_pack(QuantFormat format, const float* weights, long long n,
                   long long k, void* packed) {
+  return qgemv_pack_weighted(format, weights, nullptr, n, k, packed);
+}
+
+Status qgemv_pack_weighted(QuantFormat format, const float* weights,
+                           const float* importance, long long n, long long k,
+                           void* packed) {
   const Status status = validate(format, n, k);
   if (status != Status::kOk) {
     return status;
@@ -174,13 +215,21 @@ Status qgemv_pack(QuantFormat format, const float* weights, long long n,
   if (weights == nullptr || packed == nullptr) {
     return Status::kInvalidArgument;
   }
+  if (importance != nullptr) {
+    const long long elements = n * k;
+    for (long long i = 0; i < elements; ++i) {
+      if (!std::isfinite(importance[i]) || importance[i] < 0.0f) {
+        return Status::kInvalidArgument;
+      }
+    }
+  }
   if (format != QuantFormat::kQ8_0 && format != QuantFormat::kQ4_0 &&
       format != QuantFormat::kTQ2_0 &&
       !quant::gguf_pack_supported(format)) {
     return Status::kUnsupportedFormat;
   }
   if (quant::gguf_pack_supported(format)) {
-    return quant::gguf_pack_ref(format, weights, n, k, packed)
+    return quant::gguf_pack_ref(format, weights, n, k, packed, importance)
                ? Status::kOk
                : Status::kInvalidArgument;
   }
@@ -233,6 +282,42 @@ Status qgemv_unpack(QuantFormat format, const void* packed, long long n,
   return Status::kOk;
 }
 
+Status quant_activation_packed_size(QuantActivationFormat format, long long n,
+                                    long long k, size_t* size) {
+  const Status status = validate_activation(format, n, k);
+  if (status != Status::kOk) return status;
+  if (size == nullptr) return Status::kInvalidArgument;
+  return activation_packed_size(format, n, k, size);
+}
+
+Status quant_activation_pack(QuantActivationFormat format, const float* input,
+                             long long n, long long k, void* packed) {
+  const Status status = validate_activation(format, n, k);
+  if (status != Status::kOk) return status;
+  size_t ignored = 0;
+  if (activation_packed_size(format, n, k, &ignored) != Status::kOk) {
+    return Status::kInvalidShape;
+  }
+  if (input == nullptr || packed == nullptr) return Status::kInvalidArgument;
+  return quant::activation_pack_ref(format, input, n, k, packed)
+             ? Status::kOk
+             : Status::kInvalidArgument;
+}
+
+Status quant_activation_unpack(QuantActivationFormat format,
+                               const void* packed, long long n, long long k,
+                               float* output) {
+  const Status status = validate_activation(format, n, k);
+  if (status != Status::kOk) return status;
+  size_t ignored = 0;
+  if (activation_packed_size(format, n, k, &ignored) != Status::kOk) {
+    return Status::kInvalidShape;
+  }
+  if (packed == nullptr || output == nullptr) return Status::kInvalidArgument;
+  quant::activation_unpack_ref(format, packed, n, k, output);
+  return Status::kOk;
+}
+
 Status qgemv(QuantFormat format, const void* packed, const float* x, float* y,
              long long n, long long k) {
   const Status status = validate(format, n, k);
@@ -253,6 +338,31 @@ Status qgemv(QuantFormat format, const void* packed, const float* x, float* y,
     resolve_gguf().fn(format, packed, x, y, n, k);
   }
   return Status::kOk;
+}
+
+Status qgemv_quantized_activation(QuantFormat weight_format,
+                                  const void* packed_weights,
+                                  QuantActivationFormat activation_format,
+                                  const void* packed_activation, float* y,
+                                  long long n, long long k) {
+  const Status weight_status = validate(weight_format, n, k);
+  if (weight_status != Status::kOk) return weight_status;
+  const Status activation_status = validate_activation(activation_format, 1, k);
+  if (activation_status != Status::kOk) return activation_status;
+  if (packed_weights == nullptr || packed_activation == nullptr || y == nullptr) {
+    return Status::kInvalidArgument;
+  }
+  try {
+    thread_local std::vector<float> activation;
+    activation.resize(static_cast<size_t>(k));
+    quant::activation_unpack_ref(activation_format, packed_activation, 1, k,
+                                 activation.data());
+    return qgemv(weight_format, packed_weights, activation.data(), y, n, k);
+  } catch (const std::bad_alloc&) {
+    return Status::kOutOfMemory;
+  } catch (const std::length_error&) {
+    return Status::kInvalidShape;
+  }
 }
 
 const char* qgemv_variant(QuantFormat format) {

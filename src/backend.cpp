@@ -27,6 +27,13 @@ constexpr bool kFeatureAvx2 =
     false;
 #endif
 
+constexpr bool kFeatureF16c =
+#if defined(__F16C__)
+    true;
+#else
+    false;
+#endif
+
 constexpr bool kFeatureAvx512f =
 #if defined(__AVX512F__)
     true;
@@ -64,6 +71,13 @@ constexpr bool kFeatureAmxBf16 =
 
 constexpr bool kFeatureNeon =
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
+    true;
+#else
+    false;
+#endif
+
+constexpr bool kFeatureArmFp16 =
+#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
     true;
 #else
     false;
@@ -135,12 +149,14 @@ std::vector<FeatureHint> compile_time_feature_hints() {
       {"x86_64", kTargetX86_64, "compiler target"},
       {"aarch64", kTargetAArch64, "compiler target"},
       {"avx2", kFeatureAvx2, "compiler target macro"},
+      {"f16c", kFeatureF16c, "compiler target macro"},
       {"avx512f", kFeatureAvx512f, "compiler target macro"},
       {"avx512_vnni", kFeatureAvx512Vnni, "compiler target macro"},
       {"amx_tile", kFeatureAmxTile, "compiler target macro"},
       {"amx_int8", kFeatureAmxInt8, "compiler target macro"},
       {"amx_bf16", kFeatureAmxBf16, "compiler target macro"},
       {"neon", kFeatureNeon, "compiler target macro"},
+      {"arm_fp16", kFeatureArmFp16, "compiler target macro"},
       {"arm_dotprod", kFeatureArmDotprod, "compiler target macro"},
       {"arm_i8mm", kFeatureArmI8mm, "compiler target macro"},
       {"sve", kFeatureSve, "compiler target macro"},

@@ -9,6 +9,7 @@ namespace quixicore_cpu::quant {
 // deliberately handled later by CpuPackedWeights.
 bool gguf_pack_supported(QuantFormat format);
 bool gguf_pack_ref(QuantFormat format, const float* weights, long long n,
-                   long long k, void* packed);
+                   long long k, void* packed,
+                   const float* importance = nullptr);
 
 }  // namespace quixicore_cpu::quant

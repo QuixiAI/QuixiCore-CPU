@@ -79,6 +79,7 @@ CpuFeatures detect_cpu_features() {
   const bool os_amx = (xcr0 & kXcr0Amx) == kXcr0Amx;
 
   f.fma = os_avx && bit(leaf1.ecx, 12);
+  f.f16c = os_avx && bit(leaf1.ecx, 29);
 
   if (leaf0.eax < 7) {
     return f;

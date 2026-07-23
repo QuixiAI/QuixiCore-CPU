@@ -128,6 +128,96 @@ int main() {
     for (std::size_t i = 0; i < x.size(); ++i) {
       REQUIRE(close(y[i], x[i] / (1.0 + std::exp(-x[i]))));
     }
+    REQUIRE(silu_backward(grad.data(), x.data(), backward.data(), x.size()) ==
+            Status::kOk);
+    for (std::size_t i = 0; i < x.size(); ++i) {
+      const double probability = 1.0 / (1.0 + std::exp(-x[i]));
+      REQUIRE(close(backward[i],
+                    grad[i] * probability *
+                        (1.0 + x[i] * (1.0 - probability))));
+    }
+  }
+
+  // The complete 22-value llama unary selector, including constrained XiELU.
+  {
+    const std::vector<float> x = {-2.5f, -0.25f, 0.0f, 0.75f, 3.5f};
+    std::vector<float> y(x.size());
+    const std::vector<UnaryOp> modes = {
+        UnaryOp::kAbs,       UnaryOp::kSign,       UnaryOp::kNegate,
+        UnaryOp::kStep,      UnaryOp::kTanh,       UnaryOp::kElu,
+        UnaryOp::kRelu,      UnaryOp::kSigmoid,    UnaryOp::kGelu,
+        UnaryOp::kGeluQuick, UnaryOp::kSilu,       UnaryOp::kHardSwish,
+        UnaryOp::kHardSigmoid, UnaryOp::kExp,      UnaryOp::kExpm1,
+        UnaryOp::kSoftplus,  UnaryOp::kGeluErf,    UnaryOp::kFloor,
+        UnaryOp::kCeil,      UnaryOp::kRound,      UnaryOp::kTrunc};
+    for (UnaryOp mode : modes) {
+      REQUIRE(unary(x.data(), y.data(), x.size(), mode) == Status::kOk);
+      for (std::size_t i = 0; i < x.size(); ++i) {
+        const double value = x[i];
+        double expected = 0.0;
+        switch (mode) {
+          case UnaryOp::kAbs: expected = std::fabs(value); break;
+          case UnaryOp::kSign:
+            expected = value > 0.0 ? 1.0 : (value < 0.0 ? -1.0 : 0.0);
+            break;
+          case UnaryOp::kNegate: expected = -value; break;
+          case UnaryOp::kStep: expected = value > 0.0 ? 1.0 : 0.0; break;
+          case UnaryOp::kTanh: expected = std::tanh(value); break;
+          case UnaryOp::kElu:
+            expected = value > 0.0 ? value : std::expm1(value); break;
+          case UnaryOp::kRelu: expected = std::max(0.0, value); break;
+          case UnaryOp::kSigmoid:
+            expected = 1.0 / (1.0 + std::exp(-value)); break;
+          case UnaryOp::kGelu: {
+            constexpr double kC = 0.7978845608028654;
+            expected = 0.5 * value *
+                       (1.0 + std::tanh(kC * value *
+                                                (1.0 + 0.044715 * value * value)));
+            break;
+          }
+          case UnaryOp::kGeluQuick:
+            expected = value / (1.0 + std::exp(-1.702 * value)); break;
+          case UnaryOp::kSilu:
+            expected = value / (1.0 + std::exp(-value)); break;
+          case UnaryOp::kHardSwish:
+            expected = value * std::clamp((value + 3.0) / 6.0, 0.0, 1.0);
+            break;
+          case UnaryOp::kHardSigmoid:
+            expected = std::clamp((value + 3.0) / 6.0, 0.0, 1.0); break;
+          case UnaryOp::kExp: expected = std::exp(value); break;
+          case UnaryOp::kExpm1: expected = std::exp(value) - 1.0; break;
+          case UnaryOp::kSoftplus:
+            expected = value > 20.0 ? value : std::log(1.0 + std::exp(value));
+            break;
+          case UnaryOp::kGeluErf:
+            expected = 0.5 * value *
+                       (1.0 + std::erf(value / std::sqrt(2.0)));
+            break;
+          case UnaryOp::kFloor: expected = std::floor(value); break;
+          case UnaryOp::kCeil: expected = std::ceil(value); break;
+          case UnaryOp::kRound: expected = std::round(value); break;
+          case UnaryOp::kTrunc: expected = std::trunc(value); break;
+          case UnaryOp::kXiElu: break;
+        }
+        REQUIRE(close(y[i], expected, 2e-6, 2e-5));
+      }
+    }
+    const XiEluParams params{-0.4f, 0.3f, 0.2f, -0.1f};
+    REQUIRE(unary(x.data(), y.data(), x.size(), UnaryOp::kXiElu, params) ==
+            Status::kOk);
+    const double alpha_n = params.beta +
+                           std::log(1.0 + std::exp(params.alpha_n));
+    const double alpha_p = std::log(1.0 + std::exp(params.alpha_p));
+    for (std::size_t i = 0; i < x.size(); ++i) {
+      const double expected =
+          x[i] > 0.0f
+              ? alpha_p * x[i] * x[i] + params.beta * x[i]
+              : (std::expm1(std::min(x[i], params.eps)) - x[i]) * alpha_n +
+                    params.beta * x[i];
+      REQUIRE(close(y[i], expected, 2e-6, 2e-5));
+    }
+    REQUIRE(unary(x.data(), y.data(), x.size(), static_cast<UnaryOp>(99)) ==
+            Status::kInvalidArgument);
   }
 
   // All GLU modes share gate/value split semantics.
@@ -143,6 +233,24 @@ int main() {
     REQUIRE(glu(x, y, 1, 2, GluMode::kGlu) == Status::kOk);
     REQUIRE(close(y[0], 1.0));
     REQUIRE(close(y[1], 3.0 / (1.0 + std::exp(-1.0))));
+    REQUIRE(glu(x, y, 1, 2, GluMode::kGeGlu) == Status::kOk);
+    const double geglu =
+        0.5 * (1.0 + std::tanh(0.7978845608028654 * 1.044715));
+    REQUIRE(close(y[1], 3.0 * geglu));
+    REQUIRE(glu(x, y, 1, 2, GluMode::kGeGluErf) == Status::kOk);
+    REQUIRE(close(y[1], 3.0 * 0.5 * (1.0 + std::erf(1.0 / std::sqrt(2.0)))));
+    REQUIRE(glu(x, y, 1, 2, GluMode::kGeGluQuick) == Status::kOk);
+    REQUIRE(close(y[1], 3.0 / (1.0 + std::exp(-1.702))));
+    REQUIRE(glu(x, y, 1, 2, static_cast<GluMode>(99)) ==
+            Status::kInvalidArgument);
+
+    const float gate[] = {-3.0f, 2.0f};
+    const float value[] = {-4.0f, 3.0f};
+    REQUIRE(swiglu_oai(gate, value, y, 1, 2, 1.5f, 2.0f) == Status::kOk);
+    REQUIRE(close(y[0], -3.0 / (1.0 + std::exp(4.5)) * -1.0));
+    REQUIRE(close(y[1], 2.0 / (1.0 + std::exp(-3.0)) * 3.0));
+    REQUIRE(swiglu_oai(gate, value, y, 1, 2, 1.5f, -1.0f) ==
+            Status::kInvalidArgument);
   }
 
   // Stable softmax and LayerNorm.

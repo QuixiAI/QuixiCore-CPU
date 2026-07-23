@@ -12,6 +12,9 @@ add_executable(quixicore_cpu_bench
   harness/report.cpp
   harness/timing.cpp
   cases/contract_ops.cpp
+  cases/float_storage.cpp
+  cases/full_matrix.cpp
+  cases/llama_parity.cpp
   cases/colibri_ops.cpp
   cases/mem_triad.cpp
   cases/optimization_plan.cpp
@@ -19,6 +22,8 @@ add_executable(quixicore_cpu_bench
   cases/prerequisites.cpp
   cases/qgemv.cpp
   cases/qgemv_formats.cpp
+  cases/quant_lifecycle.cpp
+  cases/quant_import.cpp
   cases/rms_norm.cpp
   cases/sgemv_naive.cpp
 )

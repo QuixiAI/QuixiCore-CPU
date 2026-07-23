@@ -1,0 +1,8 @@
+source_symbol	cpu_mapping	status
+GGML_GLU_OP_REGLU	glu	mapped
+GGML_GLU_OP_GEGLU	glu	mapped
+GGML_GLU_OP_SWIGLU	glu	mapped
+GGML_GLU_OP_SWIGLU_OAI	swiglu_oai	mapped
+GGML_GLU_OP_GEGLU_ERF	glu	mapped
+GGML_GLU_OP_GEGLU_QUICK	glu	mapped
+GGML_GLU_OP_COUNT	-	non_kernel

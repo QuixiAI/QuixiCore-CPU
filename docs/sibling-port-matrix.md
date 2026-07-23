@@ -10,8 +10,10 @@ tile size, architecture, pipeline stage, cache layout, partition, or reduction.
 Those symbols collapse to one CPU operation when their host-observable result
 is the same. Backend programming primitives, tests, demos, educational GEMM
 stages, and hardware instructions are not model kernels and are outside this
-inventory. The result is a portable f32 reference surface, not a claim of
-fp16/bf16 ABI support or an optimized performance tier.
+inventory. Native kernels retain FP32 accumulation, while the universal
+storage adapter accepts FP16/BF16 inputs and outputs for every floating
+tensor. That is storage coverage, not a claim that every operation has native
+half arithmetic or an optimized performance tier.
 
 At this inventory point every distinct top-level sibling operation semantic is
 represented by a public CPU entry point or by an explicitly documented
@@ -22,7 +24,7 @@ coverage remains deliberately narrower and is indexed in `perf/`.
 
 | Sibling area | CPU semantic surface | Notes |
 |---|---|---|
-| Activations and elementwise | `gelu`, `gelu_backward`, `silu`, `glu`, `glu_backward`, `add`, `softmax` | Erf/tanh GELU and SwiGLU/GeGLU/ReGLU/plain GLU modes are explicit. GPU elementwise launch variants collapse by operation. |
+| Activations and elementwise | `unary` (all 22 llama selectors), `gelu`, `gelu_backward`, `silu`, `silu_backward`, `glu`, `glu_backward`, `swiglu_oai`, arithmetic/trigonometric elementwise operations, reductions, sorting, repeat/pad/roll, strided set, and `softmax` | Tanh/erf/quick GeGLU, SwiGLU, ReGLU, plain GLU, and the clamped OpenAI SwiGLU rule are explicit. GPU elementwise launch variants collapse by operation. |
 | Norms and norm-quant | `rms_norm`, `layer_norm`, both backward paths, add/residual seams, residual-next, int8/FP8 norm-add quantization | Metal split/fused backward symbols produce one combined CPU result. AddNorm FP8 token/group variants use the generic group-size API. |
 | Dense matmul and projections | `dense_gemm`, `dense_gemm_ex`, `linear_epilogue`, `decode_swiglu`, `gemm_gate_residual`, `complex_gemm`, `grouped_gemm` | CUDA/ROCm architecture, transpose, tile, staged, Flux, and educational variants collapse to these mathematical operations and epilogues. |
 | Quantized matmul | `qgemv`, W8A8 GEMV, fused up/gate/QKV GEMV, `qgemm`, backward-input, epilogues, int8/AZP, BitNet W2A8, FP8 scaled/block-scale, act-order, MXFP8/NVFP4 quantize+GEMM, split-layout MXFP4/NVFP4 GEMV, raw FP4x2 conversion, and quantized LM-head operations | Packed weight decode is shared across GEMV/GEMM/MoE/embedding. Accelerator scale swizzles become logical row-major scale tables at the CPU boundary. |
@@ -32,10 +34,10 @@ coverage remains deliberately narrower and is indexed in `perf/`.
 | Beam and speculative decode | beam step/remap/copy metadata; linear/tree/ragged rejection verification; recovered-token sampling; compact/KV metadata; EAGLE metadata | Padded and ragged host-observable results are explicit. Tree-building and EAGLE launch stages remain separate where callers consume their metadata. |
 | Embedding and multimodal serving | lookup/backward, explicit sorted backward, multimodal source-map build/merge, pooled RMS-L2, quantized embedding and embedding-bag | Atomic and sorted GPU accumulation paths produce the same deterministic CPU result. |
 | MoE | top-k/grouped/scored routing, permute/padded and per-LoRA schedules, gather/finalize and backward, grouped GEMM/SwiGLU and backward, generic packed grouped GEMM/SwiGLU, named FP8/WNA16/NVFP4 grouped GEMMs | Rectangular, padded, quantized, and fused GPU launch variants map to row-shaped expert ids and logical metadata. Distributed MoE dispatch is `all_to_all` plus the same grouped operation. |
-| Linear attention | normalized/unnormalized, causal, decayed, Based, Hedgehog, and GatedDeltaNet recurrence | CUDA/ROCm chunk KV/scan/output phases are combined in the final recurrence/attention API. |
-| State-space and convolution | selective scan, stateful varlen/APC scan, Mamba2 forward/backward, SSD decode, direct circular `fft_convolution` | SSD chunk phases and row/column backward launches collapse into full results. The direct convolution is the portable correctness oracle for FFT implementations. |
+| Linear attention | normalized/unnormalized, causal, decayed, Based, Hedgehog, GatedDeltaNet, GLA, and RWKV6/RWKV7 recurrence | CUDA/ROCm chunk KV/scan/output phases are combined in the final recurrence/attention API. Recurrent state is explicit at the CPU boundary. |
+| State-space and convolution | selective scan, stateful varlen/APC scan, Mamba2 forward/backward, SSD decode, direct circular `fft_convolution`, DSV4 hyper-connections, im2col/col2im, 2-D/3-D/depthwise/transposed convolution, and pooling/backward | SSD chunk phases and row/column backward launches collapse into full results. The direct convolution is the portable correctness oracle for FFT implementations. |
 | Training and utility kernels | cross entropy forward/backward, dense/top-k KD-KL and fused KD+CE, deterministic dropout forward/backward, Hadamard/FWHT rotate, packbits/segment-packbits/permute/tau-tail, masked AdamW | Layout/bit utilities grouped by Metal's `Marginal` primitive are explicit CPU functions. |
-| Vision and sparse serving | patch-merge LayerNorm, space-to-depth norm+linear, edge MLP, indexer quant/paged gather, vertical/slash sparse conversion, MInference block mask | Packed D32 Swin attention is an explicit adapter over biased attention semantics. |
+| Vision and sparse serving | patch-merge LayerNorm, space-to-depth norm+linear, edge MLP, relative-position/window transforms, timestep embeddings, convolution/pooling, indexer quant/paged gather, vertical/slash sparse conversion, MInference block mask | Packed D32 Swin attention is an explicit adapter over biased attention semantics. |
 | Collectives and parallel composites | all-reduce, all-gather, reduce-scatter, all-to-all, broadcast, reduce, GEMM+AR, AG+GEMM, GEMM+RS | Host-reference buffers make every rank explicit. Ring/Ulysses attention and MoE dispatch are compositions of these collectives with attention or grouped MoE; network transport and overlap strategy are not CPU kernel semantics. |
 
 ## Quantization formats
@@ -54,11 +56,11 @@ sibling quantization trees:
   fused SiLU/gate quantization, MXFP8 and NVFP4 producers, raw E2M1 packing,
   ternary statistics, and TurboQuant KV coding.
 
-`qgemv_pack` authors Q1_0, Q2_0, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, MXFP4,
-NVFP4, TQ1_0, and TQ2_0. The other entries consume sibling/GGUF packed bytes
-and have exact decoder coverage. IQ authorship is not claimed because the
-public pack API has no importance-matrix input; runtime inference decode and
-GEMV/GEMM remain covered.
+`qgemv_pack` authors every stored llama.cpp/GGUF format above, using uniform
+importance for the seven importance-sensitive IQ encoders. The explicit
+`qgemv_pack_weighted` entry accepts a row-major calibration/importance matrix.
+Q8_1 and Q8_K remain activation intermediates rather than stored-weight enum
+members and are exposed through `quant_activation_pack`/`unpack`.
 
 ## Semantic collapses
 
@@ -88,9 +90,17 @@ and the semantic collapses above.
 `contract_ops` records representative performance evidence for softmax,
 attention, MoE routing, selective scan, and q8_0 QGEMM. `ported_ops` records a
 focused fused norm-add/int8-quant run and MXFP8 logical-scale GEMM against a
-predecoded dense baseline. Exact
+predecoded dense baseline. `quant_lifecycle` covers every importance-aware IQ
+encoder plus Q8 activation layouts, and `llama_parity` covers convolution, GLA,
+DSV4, and the complete unary/GLU selectors. Exact
 commands, hardware, medians, variance, and decisions live in
 `perf/optimization_status.md`; this matrix makes no family-wide speed claim.
+
+`include/quixicore_cpu/float_storage.h` is the dtype seam. FP32 buffers remain
+zero-copy; FP16/BF16 buffers are decoded before the wrapped operation and
+encoded only after success. Exact aliases share scratch, allowing in-place
+optimizers and transforms. ARM FP16 and x86 F16C conversion are runtime gated;
+all other machines retain the portable bit-exact conversion path.
 
 The separate algorithm excavation from the Colibri CPU runner is inventoried
 in `docs/colibri-port-matrix.md`.

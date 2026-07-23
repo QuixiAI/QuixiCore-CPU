@@ -46,6 +46,19 @@ std::uint8_t fp8_max_finite(Float8Format format) {
   return format == Float8Format::kE4M3FN ? 0x7e : 0x7b;
 }
 
+std::uint32_t round_right_even(std::uint32_t value, int shift) {
+  if (shift <= 0) return value << -shift;
+  if (shift > 31) return 0;
+  const std::uint32_t truncated = value >> shift;
+  const std::uint32_t remainder = value & ((std::uint32_t{1} << shift) - 1);
+  const std::uint32_t halfway = std::uint32_t{1} << (shift - 1);
+  return truncated +
+         (remainder > halfway ||
+                  (remainder == halfway && (truncated & 1U) != 0)
+              ? 1U
+              : 0U);
+}
+
 float fp8_max_value(Float8Format format) {
   return format == Float8Format::kE4M3FN ? 448.0f : 57344.0f;
 }
@@ -99,20 +112,32 @@ std::uint8_t float8_encode(float value, Float8Format format) {
   if (!std::isfinite(magnitude) || magnitude >= fp8_max_value(format)) {
     return fp8_max_finite(format) | (negative ? 0x80 : 0);
   }
-  const int limit = format == Float8Format::kE4M3FN ? 0x7e : 0x7b;
-  std::uint8_t best = 0;
-  float best_error = std::numeric_limits<float>::infinity();
-  for (int code = 0; code <= limit; ++code) {
-    const float candidate = fp8_positive(static_cast<std::uint8_t>(code), format);
-    if (!std::isfinite(candidate)) continue;
-    const float error = std::fabs(candidate - magnitude);
-    if (error < best_error ||
-        (error == best_error && (best & 1u) != 0 && (code & 1) == 0)) {
-      best_error = error;
-      best = static_cast<std::uint8_t>(code);
+  std::uint32_t bits = 0;
+  std::memcpy(&bits, &magnitude, sizeof(bits));
+  const int source_exponent = static_cast<int>((bits >> 23) & 0xffU);
+  if (source_exponent == 0) return negative ? 0x80 : 0;
+  int unbiased_exponent = source_exponent - 127;
+  const std::uint32_t significand =
+      (std::uint32_t{1} << 23) | (bits & 0x7fffffU);
+  const int mantissa_bits = format == Float8Format::kE4M3FN ? 3 : 2;
+  const int bias = format == Float8Format::kE4M3FN ? 7 : 15;
+  std::uint32_t code = 0;
+  if (unbiased_exponent < 1 - bias) {
+    const int shift = 24 - unbiased_exponent - bias - mantissa_bits;
+    code = round_right_even(significand, shift);
+  } else {
+    std::uint32_t rounded =
+        round_right_even(significand, 23 - mantissa_bits);
+    if (rounded == (std::uint32_t{1} << (mantissa_bits + 1))) {
+      rounded >>= 1;
+      ++unbiased_exponent;
     }
+    const int encoded_exponent = unbiased_exponent + bias;
+    code = (static_cast<std::uint32_t>(encoded_exponent) << mantissa_bits) |
+           (rounded - (std::uint32_t{1} << mantissa_bits));
   }
-  return best | (negative ? 0x80 : 0);
+  code = std::min<std::uint32_t>(code, fp8_max_finite(format));
+  return static_cast<std::uint8_t>(code | (negative ? 0x80U : 0U));
 }
 
 Status quantize_int8(const float* x, std::int8_t* codes, float* scales,

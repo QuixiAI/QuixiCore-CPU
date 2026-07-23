@@ -7,6 +7,74 @@ claim must add an entry here.
 Every future kernel implementation, routing change, benchmark change, or
 performance claim must add a focused optimization entry here.
 
+## 2026-07-22: M1 canonical lifecycle and checkpoint ingestion
+
+Status: keep; M1 lifecycle exit gate complete. This does not claim M2 packed
+projection support.
+
+Implementation: `include/quixicore_cpu/quant_import.h` and
+`kernels/quantization/quant_import_ref.cpp` add an owned canonical tensor,
+FP32/FP16/BF16 packers for integer, FP8, FP4, MXFP8, MXFP4, NVFP4, and BitNet,
+and import adapters for AWQ, GPTQ v1/v2 plus act-order, AutoRound target
+formats, SmoothQuant/AZP, and checked BitNet I2_S blocks. Canonical bytes remain
+unchanged when `CpuPackedWeights::prepare` builds version-2 row panels and
+aligned side tables. Generic GGUF QGEMM rejects these panels until M2 installs
+format-specific consumers.
+
+References inspected:
+
+- AutoRound `6ff414b15728f97848936551021d0b180dd40320`, especially
+  `auto_round/export/export_to_awq/utils.py` and the AutoGPTQ/GGUF exporters;
+- GPTQ `2d65066eeb06a5c9ff5184d8cebdf33662c67faf` and T-MAC
+  `7042f8f73330bd083bc1e4bc5ccb3f88a4904aee`, for packed zeros, `g_idx`, and
+  act-order semantics;
+- SmoothQuant `c61476d728e42ae0d8a35e7e78494edcac3237b5`, for per-channel
+  weights and activation metadata; and
+- BitNet `16da220ae2b510caff437d403288882687f44ae5`, for canonical I2_S and
+  rebuildable TL preparation boundaries.
+
+Correctness: `test_quant_import` checks exact AWQ lane reversal and decoded
+outputs, GPTQ v1 zero+1, GPTQ-v2 symmetric fields, non-identity `g_idx` and
+act-order, every AutoRound target layout, SmoothQuant row sums/AZP, BitNet
+reserved codes, all FP8 scale topologies, all canonical prepared layouts, and
+FP16/BF16 input parity. `test_quantization` checks every finite FP8 code,
+signed identity, every adjacent midpoint tie, and 20,000 deterministic random
+values against an exhaustive nearest-value oracle. Full Release CTest is the
+landing gate below. The Release build passes 46/46 CTest targets. A focused
+ASan/UBSan build compiled the complete library but hit the repository's known
+Apple libc++ ABI link mismatch while linking `test_quant_import`; no sanitizer
+pass is claimed from that build.
+
+Three optimization passes, all R/N128 K1024, one thread:
+
+| format | pass 1 linear search ms | pass 2 binary table ms | pass 3 direct bits ms | final/pass 1 |
+|---|---:|---:|---:|---:|
+| FP8 E4M3FN | 34.8737 | 1.2458 | 0.3618 | 96.39x |
+| FP8 E5M2 | 25.1908 | 1.1670 | 0.3656 | 68.89x |
+| MXFP8 | 35.8365 | 1.2718 | 0.4114 | 87.10x |
+| NVFP4 | 2.6581 | 0.6741 | 0.5000 | 5.32x |
+
+Pass 1 used the original exact but O(127)-per-element FP8 search. Pass 2 kept
+exact rounding with a monotonic representable-value table and binary search.
+Pass 3 directly rounds IEEE FP32 exponent/significand bits and is retained;
+the independent exhaustive test oracle prevents the optimization from defining
+its own correctness. Non-FP8 pack/import cases stayed within ordinary run
+variance, so no unsupported speedup is claimed for them.
+
+- Hardware: Apple M5 Max, 18 logical/physical cores (6 performance, 12
+  efficiency), 128 GB; aarch64 NEON/DotProd/I8MM available.
+- OS/toolchain: macOS 26.5.2; Apple Clang 21.0.0
+  (`clang-2100.1.1.101`); CMake Release; no LTO.
+- Runtime: one thread, OS-default affinity/frequency, high-QoS harness hint,
+  steady-state buffers; final 5 warmups, 30 samples, 10 ms minimum samples.
+- Working-tree label: `7f61388-dirty`.
+- Pass artifacts: `perf/results/2026-07-22/m1-pass1-t1-fixed/`,
+  `perf/results/2026-07-22/m1-pass2-t1/`,
+  `perf/results/2026-07-22/m1-pass3-t1/`; stable final
+  `perf/results/2026-07-22/m1-pass3-final2-t1/`.
+- Decision: retain direct bit rounding and the complete canonical lifecycle;
+  reject the original linear encoder and supersede the binary-search pass.
+
 ## Required Entry Fields
 
 - Kernel, operation, dtype or quant format, and shape set.
@@ -23,6 +91,11 @@ performance claim must add a focused optimization entry here.
 
 | Date | Kernel | Dtype / Format | Shape Set | Target | Baseline | Candidate | Decision | Evidence |
 |---|---|---|---|---|---:|---:|---|---|
+| 2026-07-22 | M0 full-matrix benchmark registration | f32 plus Q4_0/Q4_K/Q6_K, INT8, MXFP4/MXFP8, NVFP4, BitNet b1.58 | 23 pass-0 decode/prefill/fusion/serving/cache cases | Apple M5 Max, aarch64 NEON/DotProd/I8MM, 1 thread | same-run scalar, dequantized, materialized, or decomposed references: 0.0414-14.2072 ms where applicable | registered current routes: 0.0874-10.1409 ms; CV 0.0103-0.0775 | keep all eight executable M0 families; no new support/speedup claim; MXFP8 and BitNet results explicitly retain optimization gaps | `perf/results/2026-07-22/m0-pass0-t1/` |
+| 2026-07-22 | universal floating storage, three passes | FP16/BF16 storage, FP32 accumulation | round trip N1048576; BF16 softmax R256 H4096 | Apple M5 Max, aarch64 FP16, 1/6 threads | scalar pass: FP16 1.6856/1.7549, BF16 0.5976/0.6010 ms; explicit softmax 1.4096/0.2985 ms | final FP16 0.0961/0.0466, BF16 0.1569/0.0548, typed softmax 1.4028/0.2995 ms | keep reusable typed adapter, compiler-vectorized BF16, threading, NEON FP16; manual unroll rejected; typed dispatch is performance-neutral | `perf/results/2026-07-22/float-storage-{pass123,native-final}-t{1,6}/` |
+| 2026-07-22 | llama unary/GLU selector closure | f32 | all 22 unary and six GLU modes; softplus/OAI SwiGLU N1048576 | portable/aarch64, 1/6 threads | unary 2.6758/0.5109; OAI GLU 2.4515/0.6971 ms | unary final 2.5420/0.5358; OAI GLU final 1.1954/0.2811 ms | keep selector hoist and source-exact direct sigmoid; reject both manual unrolls; OAI 2.05x/2.48x over pass 1 | `perf/results/2026-07-22/{unary-pass*,glu-pass*,activation-final}-t{1,6}/` |
+| 2026-07-22 | exhaustive llama operation parity | f32 | Conv C16 O32 S32; GLA B4 T64 H8 D32; DSV4 T4096 | portable/aarch64, 1/6 threads | serial conv 1.9942 ms; one-thread GLA/DSV4 0.2882/0.1385 ms | six-thread 0.7870/0.0772/0.0364 ms | keep portable semantics and outer-task parallelism; 2.53x/3.73x/3.80x | `perf/results/2026-07-22/parity-final-t{1,6}/` |
+| 2026-07-22 | complete quant authoring/activation lifecycle | seven IQ formats; Q8_0/Q8_1/Q8_K | IQ R1 K4096; Q8 R64 K4096; Q4_KxQ8_K N1024 K4096 | portable/aarch64, 1/6 threads | one-thread 11.1633-75.6794 / 0.1509-0.3383 / 1.4484 ms | six-thread 2.8692-20.0169 / 0.0515-0.0991 / 0.2876 ms | keep block-parallel authoring/activation paths; weighted work matches uniform overhead | `perf/results/2026-07-22/parity-final-t{1,6}/` |
 | 2026-07-22 | complete llama stored-format GEMV sweep | 23 non-Q4_0/Q8_0 stored formats / f32 activation | M1 N1024 K4096 | aarch64 NEON, 1 thread | same-run element decode 14.1884-17.3736 ms | direct packed block dot 0.3178-3.0547 ms | keep all direct routes; 4.68x-45.22x, CV 0.0079-0.0759 | `perf/results/2026-07-22/llama-quants-final-neon-t1-stable/` |
 | 2026-07-22 | GGUF three-pass GEMV sweep | Q4_K/Q5_K/Q6_K and IQ formats / f32 | M1 N1024 K4096 | aarch64 NEON, 1/6 threads | pass-0 8.3503-14.7039 / 1.7567-2.9806 ms | final 0.3137-2.5965 / 0.0890-0.5164 ms | keep direct packed-block dots and IQ4 table lookup; 4.0x-31.1x / 4.3x-22.5x over pass 0 | `perf/results/2026-07-22/opt3-{pass0,final}-t{1,6}/` |
 | 2026-07-22 | dense/quantized GEMM three-pass sweep | f32; Q4_0/K, Q6_K, IQ4_XS | M16/M128 N256/512/1024 K512/1024/1408 | aarch64 NEON, 1/6 threads | pass-0 dense 0.3282 / 0.1066 ms; Q4_K/Q6_K M16 1.3853-1.6778 / 0.3207-0.3802 ms | final dense 0.3319 / 0.0964 ms; Q4_K/Q6_K 0.9457-1.2375 / 0.2695-0.3599 ms | reject dense retile; keep generic panel SIMD and small-IQ4 canonical bypass | same |
@@ -51,12 +124,101 @@ performance claim must add a focused optimization entry here.
 | 2026-07-07 | quant_gemv | q8_0 | quant_matmul m=1 (4096x4096, 8192x8192, 16384x4096) | aarch64 NEON DotProd | 4.314 ms | 0.301 ms | keep dotprod variant (14.4x, 51% of DRAM roofline) | `perf/results/2026-07-07/023619-quick/` |
 | 2026-07-07 | quant_gemv | q8_0 | quant_matmul m=1 (4096x4096, 8192x8192, 16384x4096) | aarch64 baseline flags | 4.319 ms | 4.441 ms | reject multi-acc candidate; keep plain loop as ref | `perf/results/2026-07-07/022305-quick/` |
 
+## 2026-07-22: exhaustive llama operation and quant lifecycle closure
+
+Status: retained portable-reference coverage. The pinned llama.cpp CPU
+inventory now has 105/105 operation symbols classified: 89 public numerical
+mappings, seven validated view/layout adapters, and nine non-numerical enum
+markers, callback hooks, or pool selectors. Nested drift tables additionally
+cover all 22 numerical `GGML_UNARY_OP_*` modes and all six numerical
+`GGML_GLU_OP_*` modes; `GGML_OP_SILU_BACK` maps to its exact derivative rather
+than to a gated derivative. The quant inventory has canonical
+pack, unpack, and f32 GEMV coverage for all 25 stored formats, plus public
+Q8_1/Q8_K activation intermediates. These counts are enforced by
+`scripts/check_parity_manifest.py`; ISA performance tiers remain separate.
+
+New operation paths include scalar arithmetic/reductions/layout transforms;
+im2col/col2im, 2-D/3-D/depthwise/transposed convolution and pooling/backward;
+relative-position and window transforms; GLA; RWKV6/RWKV7; and all three DSV4
+hyper-connection stages. Recurrent state is explicit and parallel work is
+partitioned by sequence/head. Convolution partitions independent output
+channels; DSV4 partitions tokens.
+
+The quant lifecycle pass added exact Q2_K/Q3_K/Q4_K/Q5_K/Q6_K and IQ4_NL/XS
+packers, weighted IQ2_XXS/IQ2_XS/IQ3_XXS/IQ3_S/IQ2_S/IQ1_S/IQ1_M packers,
+canonical Q8_0/Q8_1/Q8_K activation layouts, and a quantized-activation GEMV
+contract route. During sanitizer validation, the new IQ3_S encoder exposed an
+eight-byte sign-scratch overwrite; its region scratch is now correctly sized
+for all 64 sign codes and the complete sanitizer suite passes.
+
+Three focused implementation/optimization passes were retained:
+
+| pass | change | measured outcome |
+|---|---|---|
+| 1 | direct portable operation recurrences and multi-seed IQ lattice search | correctness baseline; IQ2_S R1 K256 was 3.8177 ms |
+| 2 | remove repeated codebook-extrema scans and use llama-compatible f32 convolution accumulation | IQ2_S fell to 2.7280 ms; convolution became bit-exact to the independent f32 oracle |
+| 3 | block/row/token/output-channel parallel regions with hoisted strides and state-local reuse | retained; all final quick cases pass their embedded oracle |
+
+The nested unary selector received its own three passes: (1) a direct
+per-element selector, (2) one selector dispatch per call with template-fixed
+element loops, and (3) manual four-way unrolling. Pass 2 improved softplus from
+2.6758/0.5109 ms to 2.4371/0.4640 ms at one/six threads. Pass 3 regressed to
+2.5798/0.5158 ms and was rejected. The retained code's independent final repeat
+was 2.5420/0.5358 ms (CV 0.0134/0.0463), exact to the scalar oracle.
+
+OpenAI SwiGLU also received three passes: (1) the shared overflow-stable
+sigmoid helper, (2) llama's source-exact direct exponential expression, and
+(3) manual four-way unrolling. Pass 2 reduced N1048576 from
+2.4515/0.6971 ms to 1.2074/0.2814 ms at one/six threads. Pass 3 regressed to
+1.4535/0.3384 ms and was rejected. The retained final repeat measured
+1.1954/0.2811 ms (CV 0.0126/0.0586), bit-exact to the independent expression.
+
+Final Release medians:
+
+| path | one thread ms | six threads ms | scaling / baseline |
+|---|---:|---:|---:|
+| seven weighted IQ packers, R1 K4096 | 11.1633-75.6794 | 2.8692-20.0169 | 3.78x-3.91x thread scaling |
+| Q8_0/Q8_1/Q8_K pack, R64 K4096 | 0.1509/0.1791/0.3383 | 0.0515/0.0596/0.0991 | 2.93x/3.01x/3.41x |
+| Q4_K x Q8_K GEMV, N1024 K4096 | 1.4484 | 0.2876 | 5.04x; exact versus explicit unpack |
+| conv2d, C16 O32 S32 K3 | 3.7463 | 0.7870 | 2.53x versus 1.9942 ms serial baseline at six threads |
+| GLA, B4 T64 H8 D32 | 0.2882 | 0.0772 | 3.73x thread scaling |
+| DSV4 combine, T4096 | 0.1385 | 0.0364 | 3.80x thread scaling |
+| unary softplus, N1048576 | 2.5420 | 0.5358 | 4.65x over same-run serial baseline at six threads |
+| OpenAI SwiGLU, N1048576 | 1.1954 | 0.2811 | 4.59x over same-run serial baseline at six threads |
+
+Correctness and portability: native aarch64 Release CTest passes 43/43;
+ASan+UBSan+float-cast-overflow passes 42/42 with leak detection disabled because
+Apple's ASan runtime does not support it; x86_64 Release compiles AVX2,
+AVX-512, VNNI, and AMX source sets and passes 38/38 under Rosetta. The parity
+checker also verifies that every mapped operation names a real public CPU
+function, derives the complete live quant-type inventory from llama's
+`enum ggml_type`, rejects unary or GLU selector drift, and maps all 66
+operation-level plus 29 quant-family entries published by the pinned sibling
+manifests. CUDA's pinned manifest remains family-level, which is recorded as a
+source-metadata limit rather than inferred operation-level evidence.
+
+- Hardware: Apple M5 Max, 18 physical/logical cores (6 performance, 12
+  efficiency), 128 GB; native aarch64 NEON with DotProd and I8MM.
+- OS/toolchain: macOS 26.5.2; Apple Clang 21.0.0
+  (`clang-2100.1.1.101`); CMake Release.
+- Settings: one or six threads, OS-default affinity/frequency, 3 warmups,
+  10 timed samples, 5 ms minimum sample; correctness enabled.
+- Command: `quixicore_cpu_bench --preset quick --kernel
+  quant_lifecycle,llama_parity --threads {1,6} --warmup 3 --iters 10
+  --min-sample-ms 5`.
+- Working-tree label: `7f61388-dirty`.
+- Raw results: `perf/results/2026-07-22/parity-final-t{1,6}/`; exploratory
+  passes are retained under `quant-lifecycle-pass*`, `llama-parity-pass*`, and
+  `unary-pass{1,2,3}-t{1,6}`. The nested-selector final repeat is
+  `perf/results/2026-07-22/activation-final-t{1,6}/`; OpenAI SwiGLU passes are
+  retained under `glu-pass{1,2,3}-t{1,6}`.
+
 ## 2026-07-22: complete llama.cpp stored-quant CPU paths
 
-Status: retained for canonical decode/GEMV and the pack formats expressible by
-the current public API. This closes compute coverage for the 25 stored llama.cpp
-weight formats; Q8_1 and Q8_K remain internal activation/dot-partner layouts,
-not public stored-weight formats.
+Status: retained for canonical decode/GEMV and superseded for authoring by the
+complete lifecycle entry above. Compute and authoring cover all 25 stored
+llama.cpp weight formats. Q8_1 and Q8_K remain activation/dot-partner layouts,
+not stored-weight enum members, but now have public activation pack/unpack APIs.
 
 References inspected at implementation time: llama.cpp `2beefef68`, vLLM
 Marlin `4b594b4aa`, and QuixiCore-Metal `bc968fc`. The CPU application of those
@@ -71,10 +233,12 @@ Coverage added in this pass:
   layout. UE4M3 is decoded as unsigned, and IQ1_M uses the signed CPU grid
   ordering rather than the GPU-transposed lookup table.
 - Canonical public packers for Q1_0, Q2_0, Q4_1, Q5_0, Q5_1, MXFP4, NVFP4,
-  and TQ1_0, alongside the existing Q4_0, Q8_0, and TQ2_0 packers. Exact golden
-  bytes pin scale placement and lane ordering. The current pack API has no
-  importance-matrix parameter, so IQ pack creation is deliberately not
-  claimed; imported IQ GGUF blocks are fully decoded and computed.
+  and TQ1_0, alongside Q4_0, Q8_0, and TQ2_0. The subsequent lifecycle pass
+  added Q2_K through Q6_K, IQ4_NL/XS, and all seven importance-sensitive IQ
+  encoders. `qgemv_pack_weighted` accepts an explicit importance matrix;
+  `qgemv_pack` supplies uniform importance. Exact golden bytes pin every
+  deterministic non-IQ layout, while IQ output is checked through canonical
+  decode, error bounds, determinism, and llama.cpp interoperability.
 - Direct aarch64 block-dot routes for every stored llama format. Classic Q4/Q5
   and FP4 use NEON nibble/table lookup; K, IQ, and ternary formats consume
   packed fields without a 256-float decode scratch block.
