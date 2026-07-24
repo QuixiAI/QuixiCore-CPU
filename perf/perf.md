@@ -920,6 +920,20 @@ UndefinedBehaviorSanitizer settings. Run another supported architecture or the
 CI platform matrix for portable/shared changes. Sanitizer and profiler builds
 are correctness/diagnostic evidence, not performance evidence.
 
+For a portable-only fallback audit, use a fresh build directory (or rely on the
+forced cache reset) and disable every optional ISA source explicitly:
+
+```sh
+cmake -S . -B build-portable \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DQUIXICORE_CPU_ENABLE_ISA_VARIANTS=OFF
+cmake --build build-portable -j
+ctest --test-dir build-portable --output-on-failure
+```
+
+Record this separately from a forced runtime `ref` route: the portable-only
+build proves link and dispatch completeness without any ISA object present.
+
 Before publishing, update both status documents, ensure `git diff --check`
 passes, and include the performance table and scoped claim in the change notes.
 

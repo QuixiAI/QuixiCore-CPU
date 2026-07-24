@@ -142,7 +142,8 @@ function(_quixicore_cpu_isa_supported isa out_supported out_flags)
   quixicore_cpu_target_arch(target_arch)
 
   set(supported FALSE)
-  if(known AND target_arch STREQUAL "${isa_arch}")
+  if(QUIXICORE_CPU_ENABLE_ISA_VARIANTS AND
+     known AND target_arch STREQUAL "${isa_arch}")
     if(flags)
       set(CMAKE_REQUIRED_QUIET TRUE)
       list(JOIN flags " " probe_flags)
@@ -154,7 +155,7 @@ function(_quixicore_cpu_isa_supported isa out_supported out_flags)
   endif()
 
   set(QUIXICORE_CPU_ISA_${isa_upper}_SUPPORTED "${supported}"
-      CACHE INTERNAL "Build can compile ${isa} kernel variants")
+      CACHE INTERNAL "Build can compile ${isa} kernel variants" FORCE)
   set(${out_supported} "${supported}" PARENT_SCOPE)
   set(${out_flags} "${flags}" PARENT_SCOPE)
 endfunction()

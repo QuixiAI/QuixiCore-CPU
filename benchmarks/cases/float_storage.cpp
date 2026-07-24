@@ -1,5 +1,7 @@
 // Focused optimization evidence for universal FP16/BF16 storage fallback.
 
+#include "quixicore_cpu/float_storage.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -12,7 +14,6 @@
 #include "harness/case.h"
 #include "harness/donotopt.h"
 #include "kernels/common/fp16.h"
-#include "quixicore_cpu/float_storage.h"
 #include "quixicore_cpu/ops.h"
 
 namespace qcb {
@@ -31,24 +32,16 @@ float local_bf16_to_float(std::uint16_t bits) {
 std::uint16_t local_float_to_bf16(float value) {
   std::uint32_t bits;
   std::memcpy(&bits, &value, sizeof bits);
-  if ((bits & 0x7f800000u) == 0x7f800000u &&
-      (bits & 0x007fffffu) != 0) {
+  if ((bits & 0x7f800000u) == 0x7f800000u && (bits & 0x007fffffu) != 0) {
     return static_cast<std::uint16_t>((bits >> 16) | 0x0040u);
   }
-  return static_cast<std::uint16_t>(
-      (bits + 0x7fffu + ((bits >> 16) & 1u)) >> 16);
-}
-
-float decode_one(FloatStorageType type, std::uint16_t bits) {
-  return type == FloatStorageType::kF16
-             ? quixicore_cpu::fp16_to_fp32(bits)
-             : local_bf16_to_float(bits);
+  return static_cast<std::uint16_t>((bits + 0x7fffu + ((bits >> 16) & 1u)) >>
+                                    16);
 }
 
 std::uint16_t encode_one(FloatStorageType type, float value) {
-  return type == FloatStorageType::kF16
-             ? quixicore_cpu::fp32_to_fp16(value)
-             : local_float_to_bf16(value);
+  return type == FloatStorageType::kF16 ? quixicore_cpu::fp32_to_fp16(value)
+                                        : local_float_to_bf16(value);
 }
 
 struct ConvertBuffers {
@@ -125,8 +118,8 @@ CaseDecl make_conversion(FloatStorageType type, long long count) {
     buffers->output = aligned_alloc_array<std::uint16_t>(count);
     buffers->scratch = aligned_alloc_array<float>(count);
     for (long long i = 0; i < count; ++i) {
-      const float value = 8.0f *
-          std::sin(static_cast<float>(i) * 0.0009765625f);
+      const float value =
+          8.0f * std::sin(static_cast<float>(i) * 0.0009765625f);
       buffers->input.get()[i] = encode_one(type, value);
     }
     CaseBody body;
@@ -187,8 +180,8 @@ CaseDecl make_typed_softmax(long long rows, long long dim) {
   const long long count = rows * dim;
   CaseDecl decl;
   decl.kernel = "float_storage";
-  decl.variant = "bf16_softmax_R" + std::to_string(rows) + "_D" +
-                 std::to_string(dim);
+  decl.variant =
+      "bf16_softmax_R" + std::to_string(rows) + "_D" + std::to_string(dim);
   decl.shape = {{"rows", rows}, {"hidden", dim}};
   decl.dtype = "bf16/f32/bf16";
   decl.notes = "generic typed dispatch versus explicitly staged conversion";
@@ -255,10 +248,9 @@ CaseDecl make_typed_softmax(long long rows, long long dim) {
 
 void build_float_storage_cases(const BuildCtx& ctx,
                                std::vector<CaseDecl>& out) {
-  const long long count = ctx.preset == Preset::kSmoke
-                              ? (1LL << 16)
-                              : ctx.preset == Preset::kQuick ? (1LL << 20)
-                                                              : (1LL << 24);
+  const long long count = ctx.preset == Preset::kSmoke   ? (1LL << 16)
+                          : ctx.preset == Preset::kQuick ? (1LL << 20)
+                                                         : (1LL << 24);
   out.push_back(make_conversion(FloatStorageType::kF16, count));
   out.push_back(make_conversion(FloatStorageType::kBF16, count));
   if (ctx.preset == Preset::kSmoke) {

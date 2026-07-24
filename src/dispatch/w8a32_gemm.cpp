@@ -1,12 +1,12 @@
-#include "quixicore_cpu/qgemm.h"
+#include "kernels/quantization/w8a32_gemm.h"
 
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 
 #include "kernels/common/validation.h"
-#include "kernels/quantization/w8a32_gemm.h"
 #include "quixicore_cpu/cpu_features.h"
+#include "quixicore_cpu/qgemm.h"
 
 namespace quixicore_cpu {
 namespace {
@@ -18,8 +18,7 @@ struct Variant {
 };
 
 constexpr Variant kVariants[] = {
-    {"ref", &quant::w8a32_gemm_ref,
-     [](const CpuFeatures&) { return true; }},
+    {"ref", &quant::w8a32_gemm_ref, [](const CpuFeatures&) { return true; }},
 #if defined(__aarch64__) || defined(_M_ARM64)
     {"neon", &quant::w8a32_gemm_neon,
      [](const CpuFeatures& features) { return features.neon; }},
@@ -35,13 +34,13 @@ constexpr Variant kVariants[] = {
 };
 
 const Variant& resolve() {
-  static const Variant& selected = []() -> const Variant& {
+  static const Variant* selected = []() -> const Variant* {
     const CpuFeatures& features = cpu_features();
     if (const char* forced = std::getenv("QUIXICORE_CPU_W8A32_VARIANT")) {
       for (const Variant& variant : kVariants) {
         if (std::strcmp(forced, variant.name) == 0 &&
             variant.supported(features)) {
-          return variant;
+          return &variant;
         }
       }
     }
@@ -49,9 +48,9 @@ const Variant& resolve() {
     for (const Variant& variant : kVariants) {
       if (variant.supported(features)) best = &variant;
     }
-    return *best;
+    return best;
   }();
-  return selected;
+  return *selected;
 }
 
 }  // namespace

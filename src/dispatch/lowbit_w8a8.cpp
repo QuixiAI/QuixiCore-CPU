@@ -1,5 +1,3 @@
-#include "quixicore_cpu/lowbit.h"
-
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -7,6 +5,7 @@
 #include "kernels/common/validation.h"
 #include "kernels/quantization/lowbit.h"
 #include "quixicore_cpu/cpu_features.h"
+#include "quixicore_cpu/lowbit.h"
 #include "quixicore_cpu/quantization.h"
 
 namespace quixicore_cpu {
@@ -19,8 +18,7 @@ struct Variant {
 };
 
 constexpr Variant kVariants[] = {
-    {"ref", &quant::lowbit_w8a8_ref,
-     [](const CpuFeatures&) { return true; }},
+    {"ref", &quant::lowbit_w8a8_ref, [](const CpuFeatures&) { return true; }},
 #if defined(QUIXICORE_CPU_HAVE_LOWBIT_W8A8_AVX2)
     {"avx2", &quant::lowbit_w8a8_avx2,
      [](const CpuFeatures& features) { return features.avx2; }},
@@ -40,14 +38,14 @@ constexpr Variant kVariants[] = {
 };
 
 const Variant& resolve() {
-  static const Variant& selected = []() -> const Variant& {
+  static const Variant* selected = []() -> const Variant* {
     const CpuFeatures& features = cpu_features();
     const char* forced = std::getenv("QUIXICORE_CPU_LOWBIT_W8A8_VARIANT");
     if (forced != nullptr) {
       for (const Variant& variant : kVariants) {
         if (std::strcmp(forced, variant.name) == 0 &&
             variant.supported(features)) {
-          return variant;
+          return &variant;
         }
       }
     }
@@ -55,9 +53,9 @@ const Variant& resolve() {
     for (const Variant& variant : kVariants) {
       if (variant.supported(features)) best = &variant;
     }
-    return *best;
+    return best;
   }();
-  return selected;
+  return *selected;
 }
 
 }  // namespace
@@ -71,8 +69,8 @@ Status lowbit_gemm_w8a8(const std::uint8_t* packed_weights,
   }
   std::size_t bytes = 0;
   std::size_t scales = 0;
-  Status status = lowbit_packed_size(LowBitFormat::kInt4Row, n, k, 0,
-                                     &bytes, &scales);
+  Status status =
+      lowbit_packed_size(LowBitFormat::kInt4Row, n, k, 0, &bytes, &scales);
   if (status != Status::kOk) return status;
   (void)bytes;
   (void)scales;
@@ -80,8 +78,8 @@ Status lowbit_gemm_w8a8(const std::uint8_t* packed_weights,
   thread_local std::vector<float> activation_scales;
   quantized.resize(static_cast<std::size_t>(m * k));
   activation_scales.resize(static_cast<std::size_t>(m));
-  status = quantize_int8(x, quantized.data(), activation_scales.data(), m, k,
-                         k);
+  status =
+      quantize_int8(x, quantized.data(), activation_scales.data(), m, k, k);
   if (status != Status::kOk) return status;
   const Variant& variant = resolve();
   const quant::LowBitW8A8Fn kernel =

@@ -1,7 +1,3 @@
-#include "quixicore_cpu/packed_weights.h"
-#include "quixicore_cpu/qgemm.h"
-#include "quixicore_cpu/quant_import.h"
-
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -11,13 +7,17 @@
 #include <numeric>
 #include <vector>
 
-#define REQUIRE(condition)                                                    \
-  do {                                                                        \
-    if (!(condition)) {                                                       \
-      std::cerr << "FAILED: " #condition " at " << __FILE__ << ':'          \
-                << __LINE__ << '\n';                                          \
-      return false;                                                           \
-    }                                                                         \
+#include "quixicore_cpu/packed_weights.h"
+#include "quixicore_cpu/qgemm.h"
+#include "quixicore_cpu/quant_import.h"
+
+#define REQUIRE(condition)                                                     \
+  do {                                                                         \
+    if (!(condition)) {                                                        \
+      std::cerr << "FAILED: " #condition " at " << __FILE__ << ':' << __LINE__ \
+                << '\n';                                                       \
+      return false;                                                            \
+    }                                                                          \
   } while (0)
 
 namespace {
@@ -35,8 +35,8 @@ bool close(float actual, float expected, float tolerance) {
 
 std::uint8_t nibble(const std::vector<std::uint8_t>& data,
                     std::size_t element) {
-  return static_cast<std::uint8_t>(
-      (data[element / 2] >> (4 * (element & 1))) & 0x0f);
+  return static_cast<std::uint8_t>((data[element / 2] >> (4 * (element & 1))) &
+                                   0x0f);
 }
 
 bool test_canonical_packers() {
@@ -76,21 +76,18 @@ bool test_canonical_packers() {
     CanonicalQuantTensor f32_tensor;
     CanonicalQuantTensor f16_tensor;
     CanonicalQuantTensor bf16_tensor;
-    REQUIRE(quantize_canonical(
-                {values.data(), FloatStorageType::kF32,
-                 static_cast<long long>(values.size())},
-                rows, columns, test.layout, test.group_size, &f32_tensor) ==
-            Status::kOk);
-    REQUIRE(quantize_canonical(
-                {f16.data(), FloatStorageType::kF16,
-                 static_cast<long long>(f16.size())},
-                rows, columns, test.layout, test.group_size, &f16_tensor) ==
-            Status::kOk);
-    REQUIRE(quantize_canonical(
-                {bf16.data(), FloatStorageType::kBF16,
-                 static_cast<long long>(bf16.size())},
-                rows, columns, test.layout, test.group_size, &bf16_tensor) ==
-            Status::kOk);
+    REQUIRE(quantize_canonical({values.data(), FloatStorageType::kF32,
+                                static_cast<long long>(values.size())},
+                               rows, columns, test.layout, test.group_size,
+                               &f32_tensor) == Status::kOk);
+    REQUIRE(quantize_canonical({f16.data(), FloatStorageType::kF16,
+                                static_cast<long long>(f16.size())},
+                               rows, columns, test.layout, test.group_size,
+                               &f16_tensor) == Status::kOk);
+    REQUIRE(quantize_canonical({bf16.data(), FloatStorageType::kBF16,
+                                static_cast<long long>(bf16.size())},
+                               rows, columns, test.layout, test.group_size,
+                               &bf16_tensor) == Status::kOk);
     REQUIRE(validate_canonical_quant_tensor(f32_tensor) == Status::kOk);
     REQUIRE(f32_tensor.data == f16_tensor.data);
     REQUIRE(f32_tensor.data == bf16_tensor.data);
@@ -111,22 +108,20 @@ bool test_canonical_packers() {
   }
 
   CanonicalQuantTensor nv2d;
-  REQUIRE(quantize_canonical(
-              {values.data(), FloatStorageType::kF32,
-               static_cast<long long>(values.size())},
-              rows, columns, CanonicalQuantLayout::kNVFP4E2M1E4M3, 16,
-              &nv2d, true) == Status::kOk);
+  REQUIRE(quantize_canonical({values.data(), FloatStorageType::kF32,
+                              static_cast<long long>(values.size())},
+                             rows, columns,
+                             CanonicalQuantLayout::kNVFP4E2M1E4M3, 16, &nv2d,
+                             true) == Status::kOk);
   REQUIRE(nv2d.metadata.scale_2d && nv2d.metadata.scale_domain_rows == 16);
 
-  for (QuantScaleMode mode : {
-           QuantScaleMode::kTensor, QuantScaleMode::kRow,
-           QuantScaleMode::kChannel, QuantScaleMode::kGroup,
-           QuantScaleMode::kBlock}) {
+  for (QuantScaleMode mode :
+       {QuantScaleMode::kTensor, QuantScaleMode::kRow, QuantScaleMode::kChannel,
+        QuantScaleMode::kGroup, QuantScaleMode::kBlock}) {
     CanonicalQuantTensor scaled;
     const long long group =
-        mode == QuantScaleMode::kGroup || mode == QuantScaleMode::kBlock
-            ? 16
-            : 0;
+        mode == QuantScaleMode::kGroup || mode == QuantScaleMode::kBlock ? 16
+                                                                         : 0;
     const int block_rows = mode == QuantScaleMode::kBlock ? 2 : 1;
     REQUIRE(quantize_canonical_fp_scaled(
                 {values.data(), FloatStorageType::kF32,
@@ -137,8 +132,7 @@ bool test_canonical_packers() {
     const std::size_t expected_scales =
         mode == QuantScaleMode::kTensor
             ? 1
-            : (mode == QuantScaleMode::kRow ||
-                       mode == QuantScaleMode::kChannel
+            : (mode == QuantScaleMode::kRow || mode == QuantScaleMode::kChannel
                    ? rows
                    : (mode == QuantScaleMode::kBlock ? 2 : 4));
     REQUIRE(scaled.scales.size() == expected_scales);
@@ -212,8 +206,7 @@ bool test_gptq_fragments() {
   source.group_size = k;
   CanonicalQuantTensor tensor;
   REQUIRE(import_gptq_u4(source, &tensor) == Status::kOk);
-  const std::array<std::uint8_t, 4> expected_row = {0x10, 0x32, 0x54,
-                                                   0x76};
+  const std::array<std::uint8_t, 4> expected_row = {0x10, 0x32, 0x54, 0x76};
   REQUIRE(std::memcmp(tensor.data.data(), expected_row.data(),
                       expected_row.size()) == 0);
   REQUIRE(tensor.zero_points[0] == 3.0f);
@@ -287,9 +280,9 @@ bool test_autoround_targets() {
                 layout == CanonicalQuantLayout::kFP8E5M2
             ? 0
             : (layout == CanonicalQuantLayout::kNVFP4E2M1E4M3 ? 16 : 32);
-    REQUIRE(quantize_canonical(
-                {values.data(), FloatStorageType::kF32, columns}, rows,
-                columns, layout, group, &original) == Status::kOk);
+    REQUIRE(quantize_canonical({values.data(), FloatStorageType::kF32, columns},
+                               rows, columns, layout, group,
+                               &original) == Status::kOk);
     AutoRoundCanonicalSource source;
     source.metadata = original.metadata;
     source.data = original.data.data();
@@ -337,8 +330,7 @@ bool test_smoothquant_and_preparation() {
   constexpr long long rows = 2;
   constexpr long long columns = 8;
   const std::array<std::int8_t, rows * columns> weights = {
-      -127, -64, -1, 0, 1, 2, 63, 127,
-      5,    4,   3,  2, 1, 0, -1, -2};
+      -127, -64, -1, 0, 1, 2, 63, 127, 5, 4, 3, 2, 1, 0, -1, -2};
   const std::array<float, rows> weight_scales = {0.25f, 0.125f};
   const std::array<float, 1> activation_scales = {0.0625f};
   const std::array<int, 1> activation_zeros = {-3};
@@ -370,8 +362,7 @@ bool test_smoothquant_and_preparation() {
   REQUIRE(info.scale_table_offset != static_cast<std::size_t>(-1));
   REQUIRE(info.row_sum_table_offset != static_cast<std::size_t>(-1));
   REQUIRE(info.activation_scale_offset != static_cast<std::size_t>(-1));
-  REQUIRE(info.activation_zero_point_offset !=
-          static_cast<std::size_t>(-1));
+  REQUIRE(info.activation_zero_point_offset != static_cast<std::size_t>(-1));
   REQUIRE(std::memcmp(prepared.contract_data(), tensor.data.data(),
                       tensor.data.size()) == 0);
   const auto* panel = static_cast<const std::uint8_t*>(prepared.panel_data());
@@ -381,15 +372,15 @@ bool test_smoothquant_and_preparation() {
                       tensor.row_sums.size() * sizeof(std::int32_t)) == 0);
   std::array<float, columns> x{};
   std::array<float, rows> y{};
-  REQUIRE(qgemm_prepacked(prepared, x.data(), y.data(), 1) ==
-          Status::kUnsupportedFormat);
+  REQUIRE(qgemm_prepacked(prepared, x.data(), y.data(), 1) == Status::kOk);
+  REQUIRE(y[0] == 0.0f && y[1] == 0.0f);
   return true;
 }
 
 bool test_bitnet_import() {
   using namespace quixicore_cpu;
-  std::array<std::uint8_t, 10> packed = {
-      0x00, 0x3c, 0x64, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55};
+  std::array<std::uint8_t, 10> packed = {0x00, 0x3c, 0x64, 0x55, 0x55,
+                                         0x55, 0x55, 0x55, 0x55, 0x55};
   BitNetI2Source source;
   source.packed = packed.data();
   source.packed_bytes = packed.size();
@@ -397,7 +388,8 @@ bool test_bitnet_import() {
   source.columns = 32;
   CanonicalQuantTensor tensor;
   REQUIRE(import_bitnet_i2_s(source, &tensor) == Status::kOk);
-  REQUIRE(tensor.data == std::vector<std::uint8_t>(packed.begin(), packed.end()));
+  REQUIRE(tensor.data ==
+          std::vector<std::uint8_t>(packed.begin(), packed.end()));
   REQUIRE(tensor.provenance == QuantImportProvenance::kBitNet);
   std::array<float, 32> decoded{};
   REQUIRE(dequantize_canonical(tensor, decoded.data(), decoded.size()) ==
@@ -420,13 +412,11 @@ bool test_invalid_imports() {
   GptqU4Source gptq;
   REQUIRE(import_gptq_u4(gptq, &tensor) == Status::kInvalidArgument);
   SmoothQuantW8A8Source smooth;
-  REQUIRE(import_smoothquant_w8a8(smooth, &tensor) ==
-          Status::kInvalidArgument);
+  REQUIRE(import_smoothquant_w8a8(smooth, &tensor) == Status::kInvalidArgument);
   return true;
 }
 
 }  // namespace
-
 int main() {
   if (!test_canonical_packers() || !test_awq_fragment() ||
       !test_gptq_fragments() || !test_autoround_targets() ||

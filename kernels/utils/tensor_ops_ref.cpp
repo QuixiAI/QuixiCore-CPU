@@ -1,8 +1,10 @@
 #include "quixicore_cpu/ops.h"
+#include "quixicore_cpu/float_storage.h"
 
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <cstring>
 #include <cstdint>
 #include <limits>
 #include <numeric>
@@ -43,6 +45,13 @@ long long positive_mod(long long value, long long modulus) {
   return remainder < 0 ? remainder + modulus : remainder;
 }
 
+float bf16_bits_to_float(std::uint16_t bits) {
+  const std::uint32_t word = static_cast<std::uint32_t>(bits) << 16;
+  float value;
+  std::memcpy(&value, &word, sizeof(value));
+  return value;
+}
+
 }  // namespace
 
 Status add_scalar(const float* x, float value, float* out, long long count) {
@@ -76,6 +85,51 @@ Status clamp(const float* x, float minimum, float maximum, float* out,
   return unary_apply(x, out, count, [minimum, maximum](float v) {
     return std::clamp(v, minimum, maximum);
   });
+}
+
+Status value_clip(const float* x, float minimum, float maximum, float* out,
+                  long long count) {
+  if (std::isnan(minimum) || std::isnan(maximum) || minimum > maximum) {
+    return Status::kInvalidShape;
+  }
+  return unary_apply(x, out, count, [minimum, maximum](float value) {
+    return std::clamp(value, minimum, maximum);
+  });
+}
+
+Status value_clip_storage(FloatStorageInput x, FloatStorageOutput out,
+                          float minimum, float maximum,
+                          FloatStorageWorkspace* workspace) {
+  if (x.count <= 0 || x.count != out.count) return Status::kInvalidShape;
+  if (std::isnan(minimum) || std::isnan(maximum) || minimum > maximum) {
+    return Status::kInvalidShape;
+  }
+  if (x.type == FloatStorageType::kBF16 &&
+      out.type == FloatStorageType::kBF16) {
+    if (!detail::all_nonnull(x.data, out.data)) {
+      return Status::kInvalidArgument;
+    }
+    const auto* source = static_cast<const std::uint16_t*>(x.data);
+    auto* destination = static_cast<std::uint16_t*>(out.data);
+    const std::uint16_t minimum_bits = float_to_bf16(minimum);
+    const std::uint16_t maximum_bits = float_to_bf16(maximum);
+    threading::parallel_ranges(
+        x.count, 16384, [&](long long begin, long long end, int) {
+          for (long long i = begin; i < end; ++i) {
+            const float value = bf16_bits_to_float(source[i]);
+            destination[i] = value < minimum
+                                 ? minimum_bits
+                                 : (value > maximum ? maximum_bits : source[i]);
+          }
+        });
+    return Status::kOk;
+  }
+  return with_float_storage(
+      &x, 1, &out, 1,
+      [&](const float* const* inputs, float* const* outputs) {
+        return value_clip(inputs[0], minimum, maximum, outputs[0], x.count);
+      },
+      workspace);
 }
 
 Status square(const float* x, float* out, long long count) {

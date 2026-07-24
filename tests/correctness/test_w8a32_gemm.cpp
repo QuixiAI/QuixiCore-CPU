@@ -3,8 +3,12 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <vector>
+
+#include "quixicore_cpu/cpu_features.h"
 
 namespace {
 
@@ -54,6 +58,21 @@ bool test_shape(long long m, long long n, long long k) {
 }  // namespace
 
 int main() {
+  if (const char* forced = std::getenv("QUIXICORE_CPU_W8A32_VARIANT")) {
+    const quixicore_cpu::CpuFeatures& features = quixicore_cpu::cpu_features();
+    const bool available =
+        std::strcmp(forced, "ref") == 0 ||
+        (std::strcmp(forced, "neon") == 0 && features.neon) ||
+        (std::strcmp(forced, "avx2") == 0 && features.avx2 && features.fma) ||
+        (std::strcmp(forced, "avx512") == 0 && features.avx512f);
+    if (available &&
+        std::strcmp(quixicore_cpu::qgemm_w8a32_variant(), forced) != 0) {
+      std::cerr << "FAIL: requested W8A32 route " << forced
+                << " but selected " << quixicore_cpu::qgemm_w8a32_variant()
+                << '\n';
+      return 1;
+    }
+  }
   for (long long k : {1LL, 7LL, 8LL, 15LL, 16LL, 63LL, 64LL, 65LL,
                       100LL, 1408LL}) {
     if (!test_shape(5, 5, k)) {

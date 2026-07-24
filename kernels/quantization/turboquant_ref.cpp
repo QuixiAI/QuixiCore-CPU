@@ -1,12 +1,12 @@
-#include "quixicore_cpu/quantization.h"
-
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
-#include <vector>
 
 #include "kernels/common/fp16.h"
 #include "kernels/common/validation.h"
+#include "quixicore_cpu/quantization.h"
+#include "src/threading/thread_pool.h"
 
 namespace quixicore_cpu {
 namespace {
@@ -22,9 +22,8 @@ unsigned unpack_bits(const std::uint8_t* bytes, long long element, int bits) {
   return (raw >> offset) & ((1u << bits) - 1u);
 }
 
-void pack_bits(const std::vector<unsigned>& values, int bits,
+void pack_bits(const unsigned* values, long long count, int bits,
                std::uint8_t* bytes) {
-  const long long count = static_cast<long long>(values.size());
   const long long byte_count = (count * bits + 7) / 8;
   std::fill_n(bytes, byte_count, std::uint8_t{0});
   const unsigned mask = (1u << bits) - 1u;
@@ -40,15 +39,14 @@ void pack_bits(const std::vector<unsigned>& values, int bits,
   }
 }
 
-void fwht(std::vector<float>* values) {
-  const long long count = static_cast<long long>(values->size());
+void fwht(float* values, long long count) {
   for (long long width = 1; width < count; width *= 2) {
     for (long long base = 0; base < count; base += 2 * width) {
       for (long long i = 0; i < width; ++i) {
-        const float a = (*values)[base + i];
-        const float b = (*values)[base + width + i];
-        (*values)[base + i] = a + b;
-        (*values)[base + width + i] = a - b;
+        const float a = values[base + i];
+        const float b = values[base + width + i];
+        values[base + i] = a + b;
+        values[base + width + i] = a - b;
       }
     }
   }
@@ -69,14 +67,14 @@ Status turboquant_packed_bytes(long long head_size, int bits,
   return Status::kOk;
 }
 
-Status turboquant_encode(
-    const float* key, const float* value, const int* slot_mapping,
-    const float* value_centroids, const float* signs,
-    std::uint8_t* key_cache, std::uint8_t* value_cache,
-    float* key_scale_cache, float* value_scale_cache,
-    float* key_zero_cache, long long tokens, long long slots,
-    long long heads, long long head_size, int key_bits,
-    bool key_signed, int value_bits) {
+Status turboquant_encode(const float* key, const float* value,
+                         const int* slot_mapping, const float* value_centroids,
+                         const float* signs, std::uint8_t* key_cache,
+                         std::uint8_t* value_cache, float* key_scale_cache,
+                         float* value_scale_cache, float* key_zero_cache,
+                         long long tokens, long long slots, long long heads,
+                         long long head_size, int key_bits, bool key_signed,
+                         int value_bits) {
   if (!detail::valid_product({tokens, slots, heads, head_size}) ||
       !valid_tq(head_size, key_bits, value_bits)) {
     return Status::kInvalidShape;
@@ -103,13 +101,23 @@ Status turboquant_encode(
   const long long key_bytes = (head_size * key_bits + 7) / 8;
   const long long value_bytes = (head_size * value_bits + 7) / 8;
   const float normalization = 1.0f / std::sqrt(static_cast<float>(head_size));
+  bool ordered_unique = true;
+  int previous_slot = -1;
   for (long long token = 0; token < tokens; ++token) {
-    const int slot = slot_mapping[token];
-    if (slot < 0) continue;
-    for (long long head = 0; head < heads; ++head) {
+    if (slot_mapping[token] < 0) continue;
+    if (slot_mapping[token] <= previous_slot) ordered_unique = false;
+    previous_slot = slot_mapping[token];
+  }
+  const auto encode_tasks = [&](long long begin, long long end, int) {
+    for (long long task = begin; task < end; ++task) {
+      const long long token = task / heads;
+      const long long head = task % heads;
+      const int slot = slot_mapping[token];
+      if (slot < 0) continue;
       const long long source_base = (token * heads + head) * head_size;
-      const long long scale_base = (static_cast<long long>(slot) * heads + head) * groups;
-      std::vector<unsigned> key_codes(static_cast<std::size_t>(head_size));
+      const long long scale_base =
+          (static_cast<long long>(slot) * heads + head) * groups;
+      std::array<unsigned, 256> key_codes{};
       for (long long group = 0; group < groups; ++group) {
         const float* source = key + source_base + group * 32;
         const auto bounds = std::minmax_element(source, source + 32);
@@ -119,16 +127,18 @@ Status turboquant_encode(
           const int maximum = (1 << (key_bits - 1)) - 1;
           scale = half_round(half_round(*bounds.second - *bounds.first) /
                              half_round(2.0f * maximum));
-          zero = scale != 0.0f
-                     ? std::nearbyint(half_round(*bounds.second + *bounds.first) /
-                                      half_round(2.0f * scale))
-                     : 0.0f;
+          zero =
+              scale != 0.0f
+                  ? std::nearbyint(half_round(*bounds.second + *bounds.first) /
+                                   half_round(2.0f * scale))
+                  : 0.0f;
           for (int i = 0; i < 32; ++i) {
-            const int code = scale != 0.0f
-                                 ? std::clamp(static_cast<int>(std::nearbyint(
-                                       half_round(source[i]) / scale - zero)),
-                                              -maximum, maximum)
-                                 : 0;
+            const int code =
+                scale != 0.0f
+                    ? std::clamp(static_cast<int>(std::nearbyint(
+                                     half_round(source[i]) / scale - zero)),
+                                 -maximum, maximum)
+                    : 0;
             key_codes[group * 32 + i] =
                 static_cast<unsigned>(code) & ((1u << key_bits) - 1u);
           }
@@ -140,27 +150,31 @@ Status turboquant_encode(
                      ? std::nearbyint(half_round(*bounds.first) / scale)
                      : 0.0f;
           for (int i = 0; i < 32; ++i) {
-            const int code = scale != 0.0f
-                                 ? std::clamp(static_cast<int>(std::nearbyint(
-                                       half_round(source[i]) / scale - zero)),
-                                              0, maximum)
-                                 : 0;
+            const int code =
+                scale != 0.0f
+                    ? std::clamp(static_cast<int>(std::nearbyint(
+                                     half_round(source[i]) / scale - zero)),
+                                 0, maximum)
+                    : 0;
             key_codes[group * 32 + i] = static_cast<unsigned>(code);
           }
         }
         key_scale_cache[scale_base + group] = scale;
         key_zero_cache[scale_base + group] = half_round(zero);
       }
-      pack_bits(key_codes, key_bits,
-                key_cache + (static_cast<long long>(slot) * heads + head) * key_bytes);
+      pack_bits(key_codes.data(), head_size, key_bits,
+                key_cache +
+                    (static_cast<long long>(slot) * heads + head) * key_bytes);
 
-      std::vector<float> rotated(static_cast<std::size_t>(head_size));
+      alignas(64) std::array<float, 256> rotated{};
       for (long long i = 0; i < head_size; ++i) {
         rotated[i] = value[source_base + i] * signs[i];
       }
-      fwht(&rotated);
-      for (float& item : rotated) item = half_round(item * normalization);
-      std::vector<unsigned> value_codes(static_cast<std::size_t>(head_size));
+      fwht(rotated.data(), head_size);
+      for (long long i = 0; i < head_size; ++i) {
+        rotated[i] = half_round(rotated[i] * normalization);
+      }
+      std::array<unsigned, 256> value_codes{};
       for (long long group = 0; group < groups; ++group) {
         double square_sum = 0.0;
         for (int i = 0; i < 32; ++i) {
@@ -169,21 +183,30 @@ Status turboquant_encode(
         const float scale = half_round(std::sqrt(square_sum / 32.0));
         value_scale_cache[scale_base + group] = scale;
         for (int i = 0; i < 32; ++i) {
-          const float normalized = scale != 0.0f
-                                       ? half_round(rotated[group * 32 + i] / scale)
-                                       : 0.0f;
+          const float normalized =
+              scale != 0.0f ? half_round(rotated[group * 32 + i] / scale)
+                            : 0.0f;
           int index = 0;
           while (index + 1 < centroid_count &&
-                 normalized > 0.5f *
-                     (value_centroids[index] + value_centroids[index + 1])) {
+                 normalized > 0.5f * (value_centroids[index] +
+                                      value_centroids[index + 1])) {
             ++index;
           }
           value_codes[group * 32 + i] = static_cast<unsigned>(index);
         }
       }
-      pack_bits(value_codes, value_bits,
-                value_cache + (static_cast<long long>(slot) * heads + head) * value_bytes);
+      pack_bits(value_codes.data(), head_size, value_bits,
+                value_cache + (static_cast<long long>(slot) * heads + head) *
+                                  value_bytes);
     }
+  };
+  if (ordered_unique) {
+    threading::parallel_ranges(tokens * heads, 4,
+                               [&](long long begin, long long end, int worker) {
+                                 encode_tasks(begin, end, worker);
+                               });
+  } else {
+    encode_tasks(0, tokens * heads, 0);
   }
   return Status::kOk;
 }
@@ -193,9 +216,8 @@ Status turboquant_decode(
     const float* key_scale_cache, const float* value_scale_cache,
     const float* key_zero_cache, const int* slots_to_gather,
     const float* value_centroids, const float* signs, float* key_out,
-    float* value_out, long long cache_slots, long long rows,
-    long long heads, long long head_size, int key_bits,
-    bool key_signed, int value_bits) {
+    float* value_out, long long cache_slots, long long rows, long long heads,
+    long long head_size, int key_bits, bool key_signed, int value_bits) {
   if (!detail::valid_product({cache_slots, rows, heads, head_size}) ||
       !valid_tq(head_size, key_bits, value_bits)) {
     return Status::kInvalidShape;
@@ -214,39 +236,93 @@ Status turboquant_decode(
   const long long key_bytes = (head_size * key_bits + 7) / 8;
   const long long value_bytes = (head_size * value_bits + 7) / 8;
   const float normalization = 1.0f / std::sqrt(static_cast<float>(head_size));
-  for (long long row = 0; row < rows; ++row) {
-    const long long slot = slots_to_gather[row];
-    for (long long head = 0; head < heads; ++head) {
-      const std::uint8_t* keys =
-          key_cache + (slot * heads + head) * key_bytes;
-      const std::uint8_t* values =
-          value_cache + (slot * heads + head) * value_bytes;
-      const long long scale_base = (slot * heads + head) * groups;
-      const long long output_base = (row * heads + head) * head_size;
-      std::vector<float> rotated(static_cast<std::size_t>(head_size));
-      for (long long i = 0; i < head_size; ++i) {
-        unsigned key_code = unpack_bits(keys, i, key_bits);
-        float q;
-        if (key_signed && key_bits == 8) {
-          q = static_cast<std::int8_t>(key_code);
-        } else {
-          q = static_cast<float>(key_code);
+  threading::parallel_ranges(
+      rows * heads, 4, [&](long long begin, long long end, int) {
+        for (long long task = begin; task < end; ++task) {
+          const long long row = task / heads;
+          const long long head = task % heads;
+          const long long slot = slots_to_gather[row];
+          const std::uint8_t* keys =
+              key_cache + (slot * heads + head) * key_bytes;
+          const std::uint8_t* values =
+              value_cache + (slot * heads + head) * value_bytes;
+          const long long scale_base = (slot * heads + head) * groups;
+          const long long output_base = (row * heads + head) * head_size;
+          alignas(64) std::array<float, 256> rotated{};
+          for (long long i = 0; i < head_size; ++i) {
+            unsigned key_code = unpack_bits(keys, i, key_bits);
+            float q;
+            if (key_signed && key_bits == 8) {
+              q = static_cast<std::int8_t>(key_code);
+            } else {
+              q = static_cast<float>(key_code);
+            }
+            const long long group = i / 32;
+            key_out[output_base + i] =
+                (q + key_zero_cache[scale_base + group]) *
+                key_scale_cache[scale_base + group];
+            const unsigned value_code = unpack_bits(values, i, value_bits);
+            rotated[i] = value_centroids[value_code] *
+                         value_scale_cache[scale_base + group];
+          }
+          fwht(rotated.data(), head_size);
+          for (long long i = 0; i < head_size; ++i) {
+            value_out[output_base + i] = rotated[i] * normalization * signs[i];
+          }
         }
-        const long long group = i / 32;
-        key_out[output_base + i] =
-            (q + key_zero_cache[scale_base + group]) *
-            key_scale_cache[scale_base + group];
-        const unsigned value_code = unpack_bits(values, i, value_bits);
-        rotated[i] = value_centroids[value_code] *
-                     value_scale_cache[scale_base + group];
-      }
-      fwht(&rotated);
-      for (long long i = 0; i < head_size; ++i) {
-        value_out[output_base + i] = rotated[i] * normalization * signs[i];
-      }
-    }
-  }
+      });
   return Status::kOk;
+}
+
+Status turboquant_encode_storage(
+    FloatStorageInput key, FloatStorageInput value, const int* slot_mapping,
+    const float* value_centroids, const float* signs, std::uint8_t* key_cache,
+    std::uint8_t* value_cache, float* key_scale_cache, float* value_scale_cache,
+    float* key_zero_cache, long long tokens, long long slots, long long heads,
+    long long head_size, int key_bits, bool key_signed, int value_bits,
+    FloatStorageWorkspace* workspace) {
+  if (!detail::valid_product({tokens, heads, head_size}) ||
+      key.count != tokens * heads * head_size || value.count != key.count) {
+    return Status::kInvalidShape;
+  }
+  const FloatStorageInput inputs[] = {key, value};
+  return with_float_storage(
+      inputs, 2, nullptr, 0,
+      [&](const float* const* f32_inputs, float* const*) -> Status {
+        return turboquant_encode(f32_inputs[0], f32_inputs[1], slot_mapping,
+                                 value_centroids, signs, key_cache, value_cache,
+                                 key_scale_cache, value_scale_cache,
+                                 key_zero_cache, tokens, slots, heads,
+                                 head_size, key_bits, key_signed, value_bits);
+      },
+      workspace);
+}
+
+Status turboquant_decode_storage(
+    const std::uint8_t* key_cache, const std::uint8_t* value_cache,
+    const float* key_scale_cache, const float* value_scale_cache,
+    const float* key_zero_cache, const int* slots_to_gather,
+    const float* value_centroids, const float* signs,
+    FloatStorageOutput key_out, FloatStorageOutput value_out,
+    long long cache_slots, long long rows, long long heads, long long head_size,
+    int key_bits, bool key_signed, int value_bits,
+    FloatStorageWorkspace* workspace) {
+  if (!detail::valid_product({rows, heads, head_size}) ||
+      key_out.count != rows * heads * head_size ||
+      value_out.count != key_out.count) {
+    return Status::kInvalidShape;
+  }
+  const FloatStorageOutput outputs[] = {key_out, value_out};
+  return with_float_storage(
+      nullptr, 0, outputs, 2,
+      [&](const float* const*, float* const* f32_outputs) -> Status {
+        return turboquant_decode(
+            key_cache, value_cache, key_scale_cache, value_scale_cache,
+            key_zero_cache, slots_to_gather, value_centroids, signs,
+            f32_outputs[0], f32_outputs[1], cache_slots, rows, heads, head_size,
+            key_bits, key_signed, value_bits);
+      },
+      workspace);
 }
 
 }  // namespace quixicore_cpu

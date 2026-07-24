@@ -2,8 +2,12 @@
 #include "quixicore_cpu/quantization.h"
 
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <vector>
+
+#include "quixicore_cpu/cpu_features.h"
 
 namespace {
 
@@ -81,6 +85,23 @@ bool check(long long m, long long n, long long k) {
 }  // namespace
 
 int main() {
+  if (const char* forced =
+          std::getenv("QUIXICORE_CPU_LOWBIT_W8A8_VARIANT")) {
+    const quixicore_cpu::CpuFeatures& features = quixicore_cpu::cpu_features();
+    const bool available =
+        std::strcmp(forced, "ref") == 0 ||
+        (std::strcmp(forced, "avx2") == 0 && features.avx2) ||
+        (std::strcmp(forced, "dotprod") == 0 && features.dotprod) ||
+        (std::strcmp(forced, "i8mm") == 0 && features.i8mm) ||
+        (std::strcmp(forced, "avx512_vnni") == 0 && features.avx512_vnni);
+    if (available &&
+        std::strcmp(quixicore_cpu::lowbit_gemm_w8a8_variant(), forced) != 0) {
+      std::cerr << "FAIL: requested low-bit W4A8 route " << forced
+                << " but selected "
+                << quixicore_cpu::lowbit_gemm_w8a8_variant() << '\n';
+      return 1;
+    }
+  }
   bool ok = true;
   for (long long k : {17LL, 32LL, 63LL, 64LL, 65LL, 100LL, 1408LL}) {
     ok &= check(5, 5, k);

@@ -11,13 +11,13 @@
 #include "quixicore_cpu/quantization.h"
 #include "quixicore_cpu/rms_norm.h"
 
-#define REQUIRE(condition)                                                \
-  do {                                                                    \
-    if (!(condition)) {                                                   \
-      std::cerr << "FAILED: " #condition " at " << __FILE__ << ":"      \
-                << __LINE__ << '\n';                                      \
-      return 1;                                                           \
-    }                                                                     \
+#define REQUIRE(condition)                                                     \
+  do {                                                                         \
+    if (!(condition)) {                                                        \
+      std::cerr << "FAILED: " #condition " at " << __FILE__ << ":" << __LINE__ \
+                << '\n';                                                       \
+      return 1;                                                                \
+    }                                                                          \
   } while (0)
 
 namespace {
@@ -47,19 +47,18 @@ int main() {
     const std::vector<float> bias = {0.1f, -0.2f, 0.3f};
     const std::vector<float> grad = {0.5f, -1.0f, 0.25f, 0.2f, 0.4f, -0.7f};
     std::vector<float> dx(6), dw(3), db(3), y(6), residual(6);
-    REQUIRE(layer_norm_backward(x.data(), weight.data(), grad.data(),
-                                dx.data(), dw.data(), db.data(), 2, 3) ==
-            Status::kOk);
+    REQUIRE(layer_norm_backward(x.data(), weight.data(), grad.data(), dx.data(),
+                                dw.data(), db.data(), 2, 3) == Status::kOk);
     constexpr float h = 1e-3f;
     for (int i = 0; i < 6; ++i) {
       const float saved = x[i];
       x[i] = saved + h;
-      REQUIRE(layer_norm(x.data(), weight.data(), bias.data(), y.data(), 2, 3) ==
-              Status::kOk);
+      REQUIRE(layer_norm(x.data(), weight.data(), bias.data(), y.data(), 2,
+                         3) == Status::kOk);
       const double plus = dot(y, grad);
       x[i] = saved - h;
-      REQUIRE(layer_norm(x.data(), weight.data(), bias.data(), y.data(), 2, 3) ==
-              Status::kOk);
+      REQUIRE(layer_norm(x.data(), weight.data(), bias.data(), y.data(), 2,
+                         3) == Status::kOk);
       const double minus = dot(y, grad);
       x[i] = saved;
       REQUIRE(close(dx[i], (plus - minus) / (2 * h), 4e-4, 8e-4));
@@ -76,8 +75,8 @@ int main() {
                            residual.data(), 2, 3) == Status::kOk);
     std::vector<float> next(6);
     REQUIRE(rms_norm_residual_next(x.data(), weight.data(), r, weight.data(),
-                                   residual.data(), next.data(), 2, 3) ==
-            Status::kOk);
+                                   residual.data(), next.data(), 2,
+                                   3) == Status::kOk);
     for (float value : next) REQUIRE(std::isfinite(value));
   }
 
@@ -90,9 +89,8 @@ int main() {
                                   -100, 0.1f, 0.01f, 2.5f) == Status::kOk);
     const float upstream[] = {0.7f};
     float gradient[3] = {};
-    REQUIRE(cross_entropy_backward(logits.data(), target, upstream, gradient,
-                                   1, 3, -100, 0.1f, 0.01f, 2.5f) ==
-            Status::kOk);
+    REQUIRE(cross_entropy_backward(logits.data(), target, upstream, gradient, 1,
+                                   3, -100, 0.1f, 0.01f, 2.5f) == Status::kOk);
     constexpr float h = 2e-3f;
     for (int i = 0; i < 3; ++i) {
       const float saved = logits[i];
@@ -116,7 +114,8 @@ int main() {
     REQUIRE(std::equal(sampled, sampled + 2, repeated));
     const std::uint8_t mask[] = {0xA0, 0x60};
     float processed[6];
-    REQUIRE(apply_token_bitmask(two_rows, mask, processed, 2, 3) == Status::kOk);
+    REQUIRE(apply_token_bitmask(two_rows, mask, processed, 2, 3) ==
+            Status::kOk);
     REQUIRE(processed[0] == 1 && !std::isfinite(processed[1]) &&
             processed[2] == 3);
     const int bad[] = {1};
@@ -125,16 +124,16 @@ int main() {
     const int previous[] = {2, 2, 0, 1};
     const int lengths[] = {3, 1};
     REQUIRE(apply_repetition_penalty(two_rows, previous, lengths, processed, 2,
-                                     3, 2, 2.0f, 0.5f, 0.25f) ==
-            Status::kInvalidArgument);
+                                     3, 2, 2.0f, 0.5f,
+                                     0.25f) == Status::kInvalidArgument);
     const int previous_ok[] = {2, 2, 1, 0};
     REQUIRE(apply_repetition_penalty(two_rows, previous_ok, lengths, processed,
-                                     2, 3, 2, 2.0f, 0.5f, 0.25f) ==
-            Status::kInvalidArgument);
+                                     2, 3, 2, 2.0f, 0.5f,
+                                     0.25f) == Status::kInvalidArgument);
     const int valid_lengths[] = {2, 1};
     REQUIRE(apply_repetition_penalty(two_rows, previous_ok, valid_lengths,
-                                     processed, 2, 3, 2, 2.0f, 0.5f, 0.25f) ==
-            Status::kOk);
+                                     processed, 2, 3, 2, 2.0f, 0.5f,
+                                     0.25f) == Status::kOk);
     const float probabilities[] = {0.1f, 0.6f, 0.3f};
     REQUIRE(top_k_renorm(probabilities, processed, 1, 3, 2) == Status::kOk);
     REQUIRE(close(processed[0] + processed[1] + processed[2], 1.0));
@@ -171,9 +170,9 @@ int main() {
     const int span_lengths[] = {1, 1};
     const int modal_starts[] = {1, 0};
     int source[3];
-    REQUIRE(build_multimodal_source_map(
-                span_offsets, span_lengths, modal_starts, source, 2, 3) ==
-            Status::kOk);
+    REQUIRE(build_multimodal_source_map(span_offsets, span_lengths,
+                                        modal_starts, source, 2,
+                                        3) == Status::kOk);
     REQUIRE(source[0] == -1 && source[1] == 1 && source[2] == 0);
     float merged[6];
     REQUIRE(merge_multimodal_spans(text, modal, source, merged, 3, 2, 2) ==
@@ -184,8 +183,8 @@ int main() {
     float pooled[2];
     REQUIRE(mean_pool_rms_l2(text, unit_weight, lengths, pooled, 1, 3, 2) ==
             Status::kOk);
-    REQUIRE(close(std::sqrt(pooled[0] * pooled[0] + pooled[1] * pooled[1]),
-                  1.0));
+    REQUIRE(
+        close(std::sqrt(pooled[0] * pooled[0] + pooled[1] * pooled[1]), 1.0));
   }
 
   // Vision composites on tiny shapes with independently obvious values.
@@ -204,8 +203,8 @@ int main() {
     const float projection[] = {1, 0, 0, 0, 0, 0, 0, 1};
     float projected[2];
     REQUIRE(space_to_depth_norm_linear(image, weight, bias, projection, nullptr,
-                                       projected, 1, 2, 2, 1, 2, 2) ==
-            Status::kOk);
+                                       projected, 1, 2, 2, 1, 2,
+                                       2) == Status::kOk);
     REQUIRE(close(projected[0], merged[0]) && close(projected[1], merged[3]));
 
     std::vector<float> hidden(256, 0.0f), w1(256 * 512, 0.0f), b1(256, 0.0f);
@@ -227,8 +226,8 @@ int main() {
                                gq.data(), gk.data(), gv.data(), 1, 1, 2, 2, 2,
                                true) == Status::kOk);
     auto objective = [&](std::vector<float>& query) {
-      (void)attention(query.data(), k.data(), v.data(), output.data(), 1, 1,
-                      2, 2, 2, true);
+      (void)attention(query.data(), k.data(), v.data(), output.data(), 1, 1, 2,
+                      2, 2, true);
       return dot(output, go);
     };
     constexpr float h = 1e-3f;
@@ -250,13 +249,13 @@ int main() {
     // packed [token,head,dim] is the same memory order for one head.
     const int cumulative[] = {0, 2};
     REQUIRE(varlen_attention(q.data(), k.data(), v.data(), cumulative,
-                             cumulative, output.data(), 1, 1, 1, 2, true) ==
-            Status::kOk);
+                             cumulative, output.data(), 1, 1, 1, 2,
+                             true) == Status::kOk);
     for (int i = 0; i < 4; ++i) REQUIRE(close(output[i], causal[i]));
     const float additive_bias[] = {0, -100, 0, 0};
     REQUIRE(biased_attention(q.data(), k.data(), v.data(), additive_bias,
-                             nullptr, output.data(), 1, 1, 2, 2, 2) ==
-            Status::kOk);
+                             nullptr, output.data(), 1, 1, 2, 2,
+                             2) == Status::kOk);
     REQUIRE(close(output[0], v[0], 1e-4, 1e-4));
 
     const float cos_table[] = {1, 0};
@@ -271,9 +270,167 @@ int main() {
     float qkv_out[6];
     const int position0[] = {0};
     REQUIRE(qk_norm_rope(packed_qkv, norm_weight, norm_weight, cos_table,
-                         sin_table, position0, qkv_out, 1, 1, 1, 1, 2, 2) ==
-            Status::kOk);
+                         sin_table, position0, qkv_out, 1, 1, 1, 1, 2,
+                         2) == Status::kOk);
     REQUIRE(qkv_out[4] == 5 && qkv_out[5] == 6);
+  }
+
+  // Explicit-position partial RoPE, three-axis M-RoPE, and fused QK norm.
+  {
+    constexpr long long batch = 2;
+    constexpr long long heads = 2;
+    constexpr long long tokens = 3;
+    constexpr long long dim = 8;
+    constexpr long long rotary_dim = 4;
+    constexpr long long max_position = 5;
+    constexpr long long pairs = rotary_dim / 2;
+    std::vector<float> x(batch * heads * tokens * dim);
+    std::vector<float> cosine(max_position * pairs);
+    std::vector<float> sine(max_position * pairs);
+    std::vector<float> output(x.size()), expected(x.size());
+    for (std::size_t i = 0; i < x.size(); ++i) {
+      x[i] = static_cast<float>(static_cast<int>(i % 19) - 9) / 7.0f;
+    }
+    for (long long position = 0; position < max_position; ++position) {
+      for (long long pair = 0; pair < pairs; ++pair) {
+        const double angle = 0.17 * (position + 1) * (pair + 1);
+        cosine[position * pairs + pair] = static_cast<float>(std::cos(angle));
+        sine[position * pairs + pair] = static_cast<float>(std::sin(angle));
+      }
+    }
+    const int positions[] = {0, 2, 4, 1, 3, 0};
+    REQUIRE(rotary_positioned(x.data(), cosine.data(), sine.data(), positions,
+                              output.data(), batch, heads, tokens, dim,
+                              rotary_dim, max_position, false,
+                              true) == Status::kOk);
+    expected = x;
+    for (long long item = 0; item < batch; ++item) {
+      for (long long head = 0; head < heads; ++head) {
+        for (long long token = 0; token < tokens; ++token) {
+          const long long row = ((item * heads + head) * tokens + token) * dim;
+          const long long table = positions[item * tokens + token] * pairs;
+          for (long long pair = 0; pair < pairs; ++pair) {
+            const float a = x[row + pair];
+            const float b = x[row + pairs + pair];
+            expected[row + pair] =
+                a * cosine[table + pair] - b * sine[table + pair];
+            expected[row + pairs + pair] =
+                b * cosine[table + pair] + a * sine[table + pair];
+          }
+        }
+      }
+    }
+    for (std::size_t i = 0; i < output.size(); ++i) {
+      REQUIRE(close(output[i], expected[i]));
+    }
+    REQUIRE(rotary_positioned(x.data(), cosine.data(), sine.data(), positions,
+                              output.data(), batch, heads, tokens, dim,
+                              rotary_dim, max_position, true,
+                              true) == Status::kOk);
+    for (long long row = 0; row < batch * heads * tokens; ++row) {
+      for (long long d = rotary_dim; d < dim; ++d) {
+        REQUIRE(output[row * dim + d] == x[row * dim + d]);
+      }
+    }
+
+    constexpr long long mrope_dim = 6;
+    constexpr long long mrope_pairs = mrope_dim / 2;
+    const int sections[] = {1, 1, 1};
+    std::vector<float> mcos(max_position * mrope_pairs);
+    std::vector<float> msin(max_position * mrope_pairs);
+    for (long long position = 0; position < max_position; ++position) {
+      for (long long pair = 0; pair < mrope_pairs; ++pair) {
+        const double angle = 0.11 * (position + 1) * (pair + 2);
+        mcos[position * mrope_pairs + pair] =
+            static_cast<float>(std::cos(angle));
+        msin[position * mrope_pairs + pair] =
+            static_cast<float>(std::sin(angle));
+      }
+    }
+    std::vector<int> mpositions(batch * 3 * tokens);
+    for (std::size_t i = 0; i < mpositions.size(); ++i) {
+      mpositions[i] = static_cast<int>((i * 3 + 1) % max_position);
+    }
+    REQUIRE(mrope(x.data(), mcos.data(), msin.data(), mpositions.data(),
+                  sections, output.data(), batch, heads, tokens, dim, mrope_dim,
+                  max_position, true, true) == Status::kOk);
+    expected = x;
+    for (long long item = 0; item < batch; ++item) {
+      for (long long head = 0; head < heads; ++head) {
+        for (long long token = 0; token < tokens; ++token) {
+          const long long row = ((item * heads + head) * tokens + token) * dim;
+          for (long long pair = 0; pair < mrope_pairs; ++pair) {
+            const long long position_index =
+                item * 3 * tokens + (pair % 3) * tokens + token;
+            const long long table =
+                mpositions[position_index] * mrope_pairs + pair;
+            const float a = x[row + pair];
+            const float b = x[row + mrope_pairs + pair];
+            expected[row + pair] = a * mcos[table] - b * msin[table];
+            expected[row + mrope_pairs + pair] =
+                b * mcos[table] + a * msin[table];
+          }
+        }
+      }
+    }
+    for (std::size_t i = 0; i < output.size(); ++i) {
+      REQUIRE(close(output[i], expected[i]));
+    }
+
+    constexpr long long q_tokens = 2;
+    constexpr long long q_heads = 1;
+    constexpr long long k_heads = 1;
+    constexpr long long v_heads = 1;
+    constexpr long long total_heads = q_heads + k_heads + v_heads;
+    std::vector<float> qkv(q_tokens * total_heads * dim);
+    std::vector<float> qkv_output(qkv.size()), qkv_expected(qkv.size());
+    std::vector<float> weight(dim);
+    for (std::size_t i = 0; i < qkv.size(); ++i) {
+      qkv[i] = static_cast<float>(static_cast<int>(i % 13) - 6) / 9.0f;
+    }
+    for (long long d = 0; d < dim; ++d) {
+      weight[d] = static_cast<float>(d - 3) / 16.0f;
+    }
+    const int q_positions[] = {0, 2, 1, 3, 4, 0};
+    REQUIRE(qk_norm_rope_positioned(
+                qkv.data(), weight.data(), weight.data(), mcos.data(),
+                msin.data(), q_positions, qkv_output.data(), q_tokens, q_heads,
+                k_heads, v_heads, dim, mrope_dim, max_position, 1e-5f, false,
+                1.0f, sections, true) == Status::kOk);
+    qkv_expected = qkv;
+    for (long long token = 0; token < q_tokens; ++token) {
+      for (long long head = 0; head < q_heads + k_heads; ++head) {
+        const long long row = (token * total_heads + head) * dim;
+        double squares = 0.0;
+        for (long long d = 0; d < dim; ++d) {
+          squares += static_cast<double>(qkv[row + d]) * qkv[row + d];
+        }
+        const double inverse = 1.0 / std::sqrt(squares / dim + 1e-5);
+        for (long long pair = 0; pair < mrope_pairs; ++pair) {
+          const long long table =
+              q_positions[(pair % 3) * q_tokens + token] * mrope_pairs + pair;
+          const double a = qkv[row + pair] * inverse * (weight[pair] + 1.0f);
+          const double b = qkv[row + mrope_pairs + pair] * inverse *
+                           (weight[mrope_pairs + pair] + 1.0f);
+          qkv_expected[row + pair] =
+              static_cast<float>(a * mcos[table] - b * msin[table]);
+          qkv_expected[row + mrope_pairs + pair] =
+              static_cast<float>(b * mcos[table] + a * msin[table]);
+        }
+        for (long long d = mrope_dim; d < dim; ++d) {
+          qkv_expected[row + d] =
+              static_cast<float>(qkv[row + d] * inverse * (weight[d] + 1.0f));
+        }
+      }
+    }
+    for (std::size_t i = 0; i < qkv_output.size(); ++i) {
+      REQUIRE(close(qkv_output[i], qkv_expected[i], 3e-5, 3e-4));
+    }
+    REQUIRE(qk_norm_rope_positioned(
+                qkv.data(), weight.data(), weight.data(), mcos.data(),
+                msin.data(), q_positions, qkv_output.data(), q_tokens, q_heads,
+                k_heads, v_heads, dim, mrope_dim, max_position, 1e-5f, true,
+                0.0f, sections, false) == Status::kInvalidShape);
   }
 
   // Linear-attention, GDN, SSD/Mamba, and FFT semantics.
@@ -301,8 +458,8 @@ int main() {
     float state[] = {0};
     const int cumulative[] = {0, 2};
     const int slot[] = {0};
-    REQUIRE(gdn_recurrence(q, k, v, gate, beta, state, cumulative, slot, out,
-                           1, 1, 1, 1, 1, 1, false) == Status::kOk);
+    REQUIRE(gdn_recurrence(q, k, v, gate, beta, state, cumulative, slot, out, 1,
+                           1, 1, 1, 1, 1, false) == Status::kOk);
     REQUIRE(close(out[0], 15) && close(out[1], -402));
 
     const float c[] = {1, 2};
@@ -342,8 +499,7 @@ int main() {
     for (long long target = 0; target < fft_length; ++target) {
       double expected = 0.0;
       for (long long source = 0; source < fft_length; ++source) {
-        const long long index =
-            (target - source + fft_length) % fft_length;
+        const long long index = (target - source + fft_length) % fft_length;
         expected += static_cast<double>(fft_signal[source]) * fft_kernel[index];
       }
       REQUIRE(close(fft_out[target], expected, 2e-4, 2e-4));
@@ -373,17 +529,16 @@ int main() {
         for (long long source = 0; source <= target; ++source) {
           double similarity = 0.0;
           for (long long key = 0; key < scan_dim; ++key) {
-            similarity +=
-                static_cast<double>(scan_c[target * scan_dim + key]) *
-                scan_b[source * scan_dim + key];
+            similarity += static_cast<double>(scan_c[target * scan_dim + key]) *
+                          scan_b[source * scan_dim + key];
           }
           expected += similarity *
                       std::exp(static_cast<double>(scan_decay[target] -
                                                    scan_decay[source])) *
                       scan_x[source * scan_dim + value];
         }
-        REQUIRE(close(scan_out[target * scan_dim + value], expected,
-                      2e-5, 3e-4));
+        REQUIRE(
+            close(scan_out[target * scan_dim + value], expected, 2e-5, 3e-4));
       }
     }
   }
@@ -417,8 +572,8 @@ int main() {
     const float router[] = {4, 3, 2, 1};
     int ids[2];
     float routing_weights[2];
-    REQUIRE(moe_route_grouped(router, nullptr, ids, routing_weights, 1, 4, 2,
-                              2, 1, true) == Status::kOk);
+    REQUIRE(moe_route_grouped(router, nullptr, ids, routing_weights, 1, 4, 2, 2,
+                              1, true) == Status::kOk);
     REQUIRE(ids[0] < 2 && ids[1] < 2);
     const int route_ids[] = {1, 0, 1, 0};
     int sorted[4], offsets[3], inverse[4];
@@ -430,8 +585,8 @@ int main() {
     REQUIRE(moe_gather(tokens, sorted, gathered, 2, 4, 2) == Status::kOk);
     const float equal_weights[] = {0.5f, 0.5f, 0.25f, 0.75f};
     float finalized[4];
-    REQUIRE(moe_finalize(gathered, inverse, equal_weights, finalized, 2, 2, 2) ==
-            Status::kOk);
+    REQUIRE(moe_finalize(gathered, inverse, equal_weights, finalized, 2, 2,
+                         2) == Status::kOk);
     REQUIRE(close(finalized[0], 1) && close(finalized[1], 2));
     const int row_experts[] = {0, 1};
     const float expert_matrix[] = {1, 0, 0, 1, 2, 0, 0, 2};
@@ -442,21 +597,18 @@ int main() {
     const float swiglu_weights[] = {1, 1, 1, 1, 1, 1, 1, 1,
                                     1, 1, 1, 1, 1, 1, 1, 1};
     float swiglu_out[4];
-    REQUIRE(moe_grouped_swiglu(tokens, swiglu_weights, row_experts,
-                               swiglu_out, 2, 2, 2, 2) == Status::kOk);
+    REQUIRE(moe_grouped_swiglu(tokens, swiglu_weights, row_experts, swiglu_out,
+                               2, 2, 2, 2) == Status::kOk);
     for (float value : swiglu_out) REQUIRE(value > 0.0f);
   }
 
   // Packed serving paths, sparse metadata, KD, tau-tail, and masked optimizer.
   {
-    const float table[] = {1, 2, 3, 4, 0, -1, -2, -3,
-                           5, 6, 7, 8, 9, 10, 11, 12,
-                           0, 0, 0, 0, 0, 0, 0, 0,
-                           0, 0, 0, 0, 0, 0, 0, 0,
-                           -1, -2, -3, -4, 0, 1, 2, 3,
-                           4, 5, 6, 7, 8, 9, 10, 11,
-                           0, 0, 0, 0, 0, 0, 0, 0,
-                           0, 0, 0, 0, 0, 0, 0, 0};
+    const float table[] = {1,  2,  3,  4, 0, -1, -2, -3, 5,  6,  7, 8, 9,
+                           10, 11, 12, 0, 0, 0,  0,  0,  0,  0,  0, 0, 0,
+                           0,  0,  0,  0, 0, 0,  -1, -2, -3, -4, 0, 1, 2,
+                           3,  4,  5,  6, 7, 8,  9,  10, 11, 0,  0, 0, 0,
+                           0,  0,  0,  0, 0, 0,  0,  0,  0,  0,  0, 0};
     std::size_t packed_bytes = 0;
     REQUIRE(qgemv_packed_size(QuantFormat::kQ8_0, 2, 32, &packed_bytes) ==
             Status::kOk);
@@ -465,22 +617,22 @@ int main() {
             Status::kOk);
     const int ids[] = {1, 0};
     float embedded[64];
-    REQUIRE(quantized_embedding(packed.data(), ids, nullptr, embedded, 2, 2,
-                                32, QuantFormat::kQ8_0) == Status::kOk);
+    REQUIRE(quantized_embedding(packed.data(), ids, nullptr, embedded, 2, 2, 32,
+                                QuantFormat::kQ8_0) == Status::kOk);
     REQUIRE(close(embedded[0], -1, 0.1) && close(embedded[32], 1, 0.1));
     const long long offsets[] = {0, 2};
     float bag[32];
-    REQUIRE(quantized_embedding_bag(
-                packed.data(), ids, offsets, nullptr, bag, 2, 2, 1, 32,
-                QuantFormat::kQ8_0, 1.0f, false, true) == Status::kOk);
+    REQUIRE(quantized_embedding_bag(packed.data(), ids, offsets, nullptr, bag,
+                                    2, 2, 1, 32, QuantFormat::kQ8_0, 1.0f,
+                                    false, true) == Status::kOk);
     REQUIRE(close(bag[0], 0, 0.1));
 
     const float keys[] = {1, -2, 3, -4, 4, 3, 2, 1};
     const int mapping[] = {1, 0};
     std::uint8_t code_cache[8] = {};
     float scale_cache[4] = {};
-    REQUIRE(indexer_k_quant_and_cache(keys, mapping, code_cache, scale_cache,
-                                      2, 2, 4, 2, true) == Status::kOk);
+    REQUIRE(indexer_k_quant_and_cache(keys, mapping, code_cache, scale_cache, 2,
+                                      2, 4, 2, true) == Status::kOk);
     const int gather_slots[] = {1, 0};
     float gathered_keys[8];
     REQUIRE(indexer_k_gather(code_cache, scale_cache, gather_slots,
@@ -491,8 +643,8 @@ int main() {
     const int slash[] = {0, -1};
     const int contexts[] = {8};
     int mask[4];
-    REQUIRE(minference_block_mask(vertical, slash, contexts, mask, 1, 1, 2,
-                                   2, 4, 2, 2, 2, 1) == Status::kOk);
+    REQUIRE(minference_block_mask(vertical, slash, contexts, mask, 1, 1, 2, 2,
+                                  4, 2, 2, 2, 1) == Status::kOk);
     REQUIRE(mask[0] == 1 && mask[3] == 1);
 
     const float teacher[] = {2, 1, 0, -1};
@@ -504,14 +656,14 @@ int main() {
     const float go = 1;
     REQUIRE(kd_kl_dense_backward(teacher, student, &teacher_lse, &student_lse,
                                  &go, kd_grad, 1, 4) == Status::kOk);
-    REQUIRE(kd_loss >= 0 && close(std::accumulate(kd_grad, kd_grad + 4, 0.0),
-                                  0, 1e-5));
+    REQUIRE(kd_loss >= 0 &&
+            close(std::accumulate(kd_grad, kd_grad + 4, 0.0), 0, 1e-5));
     const int top_indices[] = {0, 1};
     const float top_probabilities[] = {0.6f, 0.3f};
     float top_loss, top_lse, top_grad[4];
     REQUIRE(kd_kl_topk_forward(student, top_indices, top_probabilities,
-                               &top_loss, &top_lse, 1, 4, 2, 1.0f, true) ==
-            Status::kOk);
+                               &top_loss, &top_lse, 1, 4, 2, 1.0f,
+                               true) == Status::kOk);
     REQUIRE(kd_kl_topk_backward(student, top_indices, top_probabilities,
                                 &top_lse, &go, top_grad, 1, 4, 2, 1.0f,
                                 true) == Status::kOk);
@@ -532,8 +684,8 @@ int main() {
     float second[] = {0, 0, 0, 0};
     const std::uint8_t update_mask[] = {1, 0};
     REQUIRE(adamw_masked(parameters, gradients, first, second, update_mask, 4,
-                         2, 0, 0.1f, 0.9f, 0.99f, 1e-8f, 0.01f, 1) ==
-            Status::kOk);
+                         2, 0, 0.1f, 0.9f, 0.99f, 1e-8f, 0.01f,
+                         1) == Status::kOk);
     REQUIRE(parameters[0] != 1 && parameters[2] == 3 && first[2] == 0);
   }
 
@@ -561,9 +713,10 @@ int main() {
     REQUIRE(quantized_attention(q.data(), pk.data(), pv.data(),
                                 quant_out.data(), 1, 1, 2, 32,
                                 QuantFormat::kQ8_0, true) == Status::kOk);
-    REQUIRE(attention(q.data(), ku.data(), vu.data(), reference.data(), 1, 1,
-                      2, 2, 32, true) == Status::kOk);
-    for (int i = 0; i < 64; ++i) REQUIRE(close(quant_out[i], reference[i], 2e-5));
+    REQUIRE(attention(q.data(), ku.data(), vu.data(), reference.data(), 1, 1, 2,
+                      2, 32, true) == Status::kOk);
+    for (int i = 0; i < 64; ++i)
+      REQUIRE(close(quant_out[i], reference[i], 2e-5));
 
     const float rq[] = {1, 2, 3, 4};
     const float cos[] = {1, 1};
@@ -571,15 +724,15 @@ int main() {
     const int positions[] = {0, 1};
     const float norm_weight[] = {1, 1};
     float rotated[4];
-    REQUIRE(rope_q_norm(rq, cos, sin, positions, norm_weight, rotated, 2, 1,
-                        2, 2, false) == Status::kOk);
+    REQUIRE(rope_q_norm(rq, cos, sin, positions, norm_weight, rotated, 2, 1, 2,
+                        2, false) == Status::kOk);
     REQUIRE(std::equal(rq, rq + 4, rotated));
     const int slots[] = {1, 0};
     const float rv[] = {5, 6, 7, 8};
     float key_cache[4] = {}, value_cache[4] = {};
     REQUIRE(rope_kv_insert(rq, rv, cos, sin, positions, slots, nullptr,
-                           key_cache, value_cache, 2, 2, 1, 2, 2, false) ==
-            Status::kOk);
+                           key_cache, value_cache, 2, 2, 1, 2, 2,
+                           false) == Status::kOk);
     REQUIRE(key_cache[0] == 3 && value_cache[2] == 5);
 
     const float decode_q[] = {1, 0};
@@ -589,10 +742,10 @@ int main() {
     const float alibi[] = {0};
     const float sink[] = {-100};
     float decode_out[2];
-    REQUIRE(paged_attention_advanced(
-                decode_q, key_cache, value_cache, block_table, context,
-                block_mask, alibi, sink, decode_out, 1, 1, 1, 1, 2, 2, 1,
-                0.0f, 0, 0.0f) == Status::kOk);
+    REQUIRE(paged_attention_advanced(decode_q, key_cache, value_cache,
+                                     block_table, context, block_mask, alibi,
+                                     sink, decode_out, 1, 1, 1, 1, 2, 2, 1,
+                                     0.0f, 0, 0.0f) == Status::kOk);
     REQUIRE(std::isfinite(decode_out[0]));
     std::uint8_t fp8k[4], fp8v[4];
     for (int i = 0; i < 4; ++i) {
@@ -601,17 +754,16 @@ int main() {
     }
     const float unit_scale[] = {1};
     float fp8_out[2];
-    REQUIRE(paged_attention_fp8(
-                decode_q, fp8k, fp8v, block_table, context, unit_scale,
-                unit_scale, fp8_out, 1, 1, 1, 1, 2, 2, 1,
-                Float8Format::kE4M3FN) == Status::kOk);
+    REQUIRE(paged_attention_fp8(decode_q, fp8k, fp8v, block_table, context,
+                                unit_scale, unit_scale, fp8_out, 1, 1, 1, 1, 2,
+                                2, 1, Float8Format::kE4M3FN) == Status::kOk);
     REQUIRE(std::isfinite(fp8_out[0]));
     const float prefix_k[] = {1, 0};
     const float prefix_v[] = {9, 10};
     float cascade_out[2];
     REQUIRE(cascade_attention(decode_q, prefix_k, prefix_v, key_cache,
-                              value_cache, block_table, context, cascade_out,
-                              1, 1, 1, 1, 2, 1, 2, 1) == Status::kOk);
+                              value_cache, block_table, context, cascade_out, 1,
+                              1, 1, 1, 2, 1, 2, 1) == Status::kOk);
     REQUIRE(std::isfinite(cascade_out[0]));
     const std::uint8_t prefix_fp8_k[] = {
         float8_encode(1, Float8Format::kE4M3FN),
@@ -621,10 +773,9 @@ int main() {
         float8_encode(10, Float8Format::kE4M3FN)};
     float cascade_fp8_out[2];
     REQUIRE(cascade_attention_fp8(
-                decode_q, prefix_fp8_k, prefix_fp8_v, key_cache,
-                value_cache, block_table, context, unit_scale, unit_scale,
-                cascade_fp8_out, 1, 1, 1, 1, 2, 1, 2, 1,
-                Float8Format::kE4M3FN) == Status::kOk);
+                decode_q, prefix_fp8_k, prefix_fp8_v, key_cache, value_cache,
+                block_table, context, unit_scale, unit_scale, cascade_fp8_out,
+                1, 1, 1, 1, 2, 1, 2, 1, Float8Format::kE4M3FN) == Status::kOk);
     REQUIRE(close(cascade_fp8_out[0], cascade_out[0]) &&
             close(cascade_fp8_out[1], cascade_out[1]));
   }

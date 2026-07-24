@@ -22,10 +22,9 @@ class AlignedStorage {
  public:
   AlignedStorage() = default;
   explicit AlignedStorage(std::size_t bytes)
-      : data_(bytes == 0
-                  ? nullptr
-                  : static_cast<std::byte*>(::operator new(
-                        bytes, std::align_val_t(WorkspaceAlignment)))) {}
+      : data_(bytes == 0 ? nullptr
+                         : static_cast<std::byte*>(::operator new(
+                               bytes, std::align_val_t(WorkspaceAlignment)))) {}
   ~AlignedStorage() { clear(); }
   AlignedStorage(AlignedStorage&& other) noexcept
       : data_(std::exchange(other.data_, nullptr)) {}
@@ -67,8 +66,7 @@ bool checked_add(std::size_t lhs, std::size_t rhs, std::size_t* result) {
   return true;
 }
 
-bool align_up(std::size_t value, std::size_t alignment,
-              std::size_t* result) {
+bool align_up(std::size_t value, std::size_t alignment, std::size_t* result) {
   const std::size_t remainder = value % alignment;
   if (remainder == 0) {
     *result = value;
@@ -190,8 +188,8 @@ struct CpuPackedWeights::Impl {
 CpuPackedWeights::CpuPackedWeights() = default;
 CpuPackedWeights::~CpuPackedWeights() = default;
 CpuPackedWeights::CpuPackedWeights(CpuPackedWeights&& other) noexcept = default;
-CpuPackedWeights& CpuPackedWeights::operator=(CpuPackedWeights&& other) noexcept =
-    default;
+CpuPackedWeights& CpuPackedWeights::operator=(
+    CpuPackedWeights&& other) noexcept = default;
 
 Status CpuPackedWeights::prepare(QuantFormat format,
                                  const void* contract_packed, long long rows,
@@ -203,8 +201,7 @@ Status CpuPackedWeights::prepare(QuantFormat format,
   if (tile == 0) return Status::kInvalidArgument;
 
   std::size_t contract_bytes = 0;
-  Status status =
-      qgemv_packed_size(format, rows, columns, &contract_bytes);
+  Status status = qgemv_packed_size(format, rows, columns, &contract_bytes);
   if (status != Status::kOk) return status;
   long long block_size = 0;
   std::size_t block_bytes = 0;
@@ -241,10 +238,9 @@ Status CpuPackedWeights::prepare(QuantFormat format,
     candidate->info.panel_alignment = 64;
     candidate->info.prepared_bytes = panel_bytes;
     candidate->info.memory_amplification =
-        contract_bytes == 0
-            ? 0.0
-            : static_cast<double>(panel_bytes) /
-                  static_cast<double>(contract_bytes);
+        contract_bytes == 0 ? 0.0
+                            : static_cast<double>(panel_bytes) /
+                                  static_cast<double>(contract_bytes);
     const auto* source = static_cast<const std::uint8_t*>(contract_packed);
     candidate->contract.assign(source, source + contract_bytes);
     candidate->panel = AlignedStorage(panel_bytes);
@@ -342,6 +338,7 @@ Status CpuPackedWeights::prepare(const CanonicalQuantTensor& tensor,
   try {
     auto candidate = std::make_unique<Impl>();
     candidate->info.canonical_layout = tensor.metadata.layout;
+    candidate->info.quant_metadata = tensor.metadata;
     candidate->info.has_canonical_layout = true;
     candidate->info.layout = layout;
     candidate->info.rows = rows;
@@ -359,10 +356,9 @@ Status CpuPackedWeights::prepare(const CanonicalQuantTensor& tensor,
     candidate->info.logical_bytes = logical_bytes;
     candidate->info.prepared_bytes = prepared_bytes;
     candidate->info.memory_amplification =
-        logical_bytes == 0
-            ? 0.0
-            : static_cast<double>(prepared_bytes) /
-                  static_cast<double>(logical_bytes);
+        logical_bytes == 0 ? 0.0
+                           : static_cast<double>(prepared_bytes) /
+                                 static_cast<double>(logical_bytes);
     candidate->contract = tensor.data;
     candidate->panel = AlignedStorage(prepared_bytes);
     std::memset(candidate->panel.data(), 0, prepared_bytes);

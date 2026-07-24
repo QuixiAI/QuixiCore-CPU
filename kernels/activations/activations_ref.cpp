@@ -1,9 +1,8 @@
-#include "quixicore_cpu/ops.h"
-
 #include <algorithm>
 #include <cmath>
 
 #include "kernels/common/validation.h"
+#include "quixicore_cpu/ops.h"
 #include "src/threading/thread_pool.h"
 
 namespace quixicore_cpu {
@@ -18,8 +17,7 @@ float gelu_value(float x, GeluApprox approx) {
     return 0.5f * x * (1.0f + std::erf(x * kInvSqrt2));
   }
   return 0.5f * x *
-         (1.0f + std::tanh(kSqrt2OverPi *
-                           (x + kGeluCoeff * x * x * x)));
+         (1.0f + std::tanh(kSqrt2OverPi * (x + kGeluCoeff * x * x * x)));
 }
 
 float gelu_derivative(float x, GeluApprox approx) {
@@ -63,8 +61,8 @@ bool valid_glu_mode(GluMode mode) {
   return mode >= GluMode::kSwiGlu && mode <= GluMode::kGeGluQuick;
 }
 
-float unary_value(float x, UnaryOp op, float alpha_n, float alpha_p,
-                  float beta, float eps) {
+float unary_value(float x, UnaryOp op, float alpha_n, float alpha_p, float beta,
+                  float eps) {
   switch (op) {
     case UnaryOp::kAbs:
       return std::fabs(x);
@@ -116,15 +114,15 @@ float unary_value(float x, UnaryOp op, float alpha_n, float alpha_p,
 }
 
 template <UnaryOp Op>
-void apply_unary_mode(const float* x, float* y, long long count,
-                      float alpha_n, float alpha_p, float beta, float eps,
+void apply_unary_mode(const float* x, float* y, long long count, float alpha_n,
+                      float alpha_p, float beta, float eps,
                       long long min_per_chunk) {
-  threading::parallel_ranges(count, min_per_chunk,
-      [&](long long begin, long long end, int) {
-    for (long long i = begin; i < end; ++i) {
-      y[i] = unary_value(x[i], Op, alpha_n, alpha_p, beta, eps);
-    }
-  });
+  threading::parallel_ranges(
+      count, min_per_chunk, [&](long long begin, long long end, int) {
+        for (long long i = begin; i < end; ++i) {
+          y[i] = unary_value(x[i], Op, alpha_n, alpha_p, beta, eps);
+        }
+      });
 }
 
 }  // namespace
@@ -175,14 +173,14 @@ Status silu_backward(const float* grad_out, const float* x, float* grad_in,
   if (!detail::all_nonnull(grad_out, x, grad_in)) {
     return Status::kInvalidArgument;
   }
-  threading::parallel_ranges(count, 16384,
-      [&](long long begin, long long end, int) {
-    for (long long i = begin; i < end; ++i) {
-      const float probability = sigmoid(x[i]);
-      grad_in[i] = grad_out[i] * probability *
-                   (1.0f + x[i] * (1.0f - probability));
-    }
-  });
+  threading::parallel_ranges(
+      count, 16384, [&](long long begin, long long end, int) {
+        for (long long i = begin; i < end; ++i) {
+          const float probability = sigmoid(x[i]);
+          grad_in[i] =
+              grad_out[i] * probability * (1.0f + x[i] * (1.0f - probability));
+        }
+      });
   return Status::kOk;
 }
 
@@ -203,10 +201,10 @@ Status unary(const float* x, float* y, long long count, UnaryOp op,
     alpha_p = softplus_value(xielu.alpha_p);
   }
   constexpr long long kMinPerChunk = 16384;
-#define QUIXICORE_CPU_UNARY_CASE(name)                                      \
-  case UnaryOp::name:                                                       \
-    apply_unary_mode<UnaryOp::name>(x, y, count, alpha_n, alpha_p,           \
-                                     xielu.beta, xielu.eps, kMinPerChunk);   \
+#define QUIXICORE_CPU_UNARY_CASE(name)                                         \
+  case UnaryOp::name:                                                          \
+    apply_unary_mode<UnaryOp::name>(x, y, count, alpha_n, alpha_p, xielu.beta, \
+                                    xielu.eps, kMinPerChunk);                  \
     break
   switch (op) {
     QUIXICORE_CPU_UNARY_CASE(kAbs);
@@ -295,8 +293,8 @@ Status glu_backward(const float* grad_out, const float* x, float* grad_in,
         case GluMode::kSwiGlu: {
           const float probability = sigmoid(gate[item]);
           activated = gate[item] * probability;
-          derivative = probability + gate[item] * probability *
-                                         (1.0f - probability);
+          derivative =
+              probability + gate[item] * probability * (1.0f - probability);
           break;
         }
         case GluMode::kGeGlu:
@@ -337,14 +335,49 @@ Status swiglu_oai(const float* gate, const float* value, float* y,
     return Status::kInvalidArgument;
   }
   const long long count = rows * dim;
-  threading::parallel_ranges(count, 16384,
-      [&](long long begin, long long end, int) {
-    for (long long i = begin; i < end; ++i) {
-      const float x = std::min(gate[i], limit);
-      const float v = std::clamp(value[i], -limit, limit);
-      y[i] = x / (1.0f + std::exp(-alpha * x)) * (v + 1.0f);
-    }
-  });
+  threading::parallel_ranges(
+      count, 16384, [&](long long begin, long long end, int) {
+        for (long long i = begin; i < end; ++i) {
+          const float x = std::min(gate[i], limit);
+          const float v = std::clamp(value[i], -limit, limit);
+          y[i] = x / (1.0f + std::exp(-alpha * x)) * (v + 1.0f);
+        }
+      });
+  return Status::kOk;
+}
+
+Status sigmoid_mul(const float* gate_logits, const float* values, float* out,
+                   long long count) {
+  if (!detail::valid_product({count})) return Status::kInvalidShape;
+  if (!detail::all_nonnull(gate_logits, values, out)) {
+    return Status::kInvalidArgument;
+  }
+  threading::parallel_ranges(
+      count, 16384, [&](long long begin, long long end, int) {
+        for (long long index = begin; index < end; ++index) {
+          out[index] = sigmoid(gate_logits[index]) * values[index];
+        }
+      });
+  return Status::kOk;
+}
+
+Status sigmoid_mul_backward(const float* grad_out, const float* gate_logits,
+                            const float* values, float* grad_gate,
+                            float* grad_values, long long count) {
+  if (!detail::valid_product({count})) return Status::kInvalidShape;
+  if (!detail::all_nonnull(grad_out, gate_logits, values, grad_gate,
+                           grad_values)) {
+    return Status::kInvalidArgument;
+  }
+  threading::parallel_ranges(
+      count, 16384, [&](long long begin, long long end, int) {
+        for (long long index = begin; index < end; ++index) {
+          const float probability = sigmoid(gate_logits[index]);
+          grad_gate[index] = grad_out[index] * values[index] * probability *
+                             (1.0f - probability);
+          grad_values[index] = grad_out[index] * probability;
+        }
+      });
   return Status::kOk;
 }
 

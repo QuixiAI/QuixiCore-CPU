@@ -1,6 +1,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <numeric>
@@ -8,6 +10,7 @@
 #include <vector>
 
 #include "quixicore_cpu/qgemv.h"
+#include "quixicore_cpu/cpu_features.h"
 
 #define REQUIRE(condition)                                                \
   do {                                                                    \
@@ -117,6 +120,18 @@ int main() {
       {QuantFormat::kQ2_0, 64, 18, 1.0f},
       {QuantFormat::kTQ1_0, 256, 54, -1.0f},
   };
+
+  if (const char* forced = std::getenv("QUIXICORE_CPU_GGUF_GEMV_VARIANT")) {
+    const CpuFeatures& features = cpu_features();
+    const bool available =
+        std::strcmp(forced, "ref") == 0 ||
+        std::strcmp(forced, "blocked_ref") == 0 ||
+        (std::strcmp(forced, "avx2") == 0 && features.avx2) ||
+        (std::strcmp(forced, "avx512") == 0 && features.avx512f);
+    if (available) {
+      REQUIRE(std::string(qgemv_variant(fixtures[0].format)) == forced);
+    }
+  }
 
   for (const Fixture& fixture : fixtures) {
     std::size_t packed_size = 0;
@@ -532,6 +547,7 @@ int main() {
                        bytes.data()) == Status::kOk);
   }
 
-  std::cout << "GGUF format tests passed\n";
+  std::cout << "GGUF format tests passed ("
+            << qgemv_variant(fixtures[0].format) << ")\n";
   return 0;
 }

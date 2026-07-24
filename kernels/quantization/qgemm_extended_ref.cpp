@@ -1,5 +1,3 @@
-#include "quixicore_cpu/qgemm.h"
-
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -9,6 +7,7 @@
 #include "kernels/common/fp16.h"
 #include "kernels/common/validation.h"
 #include "quixicore_cpu/ops.h"
+#include "quixicore_cpu/qgemm.h"
 #include "quixicore_cpu/quantization.h"
 #include "src/threading/thread_pool.h"
 
@@ -29,6 +28,8 @@ float activation(float value, LinearActivation kind) {
                                (value + 0.044715f * value * value * value)));
     case LinearActivation::kSilu:
       return value / (1.0f + std::exp(-value));
+    case LinearActivation::kRelu2:
+      return value > 0.0f ? value * value : 0.0f;
   }
   return value;
 }
@@ -70,19 +71,18 @@ Status qgemm_backward_input(QuantFormat format, const void* packed_weights,
 }
 
 Status qgemm_epilogue(QuantFormat format, const void* packed_weights,
-                      const float* x, const float* bias, float* y,
-                      long long m, long long n, long long k,
-                      LinearActivation kind) {
+                      const float* x, const float* bias, float* y, long long m,
+                      long long n, long long k, LinearActivation kind) {
   Status status = qgemm(format, packed_weights, x, y, m, n, k);
   if (status != Status::kOk) return status;
-  threading::parallel_ranges(m * n, 4096,
-                             [&](long long begin, long long end, int) {
-    for (long long index = begin; index < end; ++index) {
-      const long long output = index % n;
-      y[index] = activation(y[index] + (bias != nullptr ? bias[output] : 0.0f),
-                            kind);
-    }
-  });
+  threading::parallel_ranges(
+      m * n, 4096, [&](long long begin, long long end, int) {
+        for (long long index = begin; index < end; ++index) {
+          const long long output = index % n;
+          y[index] = activation(
+              y[index] + (bias != nullptr ? bias[output] : 0.0f), kind);
+        }
+      });
   return Status::kOk;
 }
 
@@ -111,48 +111,46 @@ Status bitnet_int8_gemm(const void* packed_weights, const std::int8_t* x,
   }
   for (long long output = 0; output < n; ++output) {
     for (long long block = 0; block < blocks; ++block) {
-      if (!std::isfinite(half_at(
-              packed + (output * blocks + block) * 10))) {
+      if (!std::isfinite(half_at(packed + (output * blocks + block) * 10))) {
         return Status::kInvalidArgument;
       }
     }
   }
-  threading::parallel_ranges(m * n, 32,
-                             [&](long long begin, long long end, int) {
-    for (long long item = begin; item < end; ++item) {
-      const long long row = item / n;
-      const long long output = item % n;
-      double result = 0.0;
-      for (long long block = 0; block < blocks; ++block) {
-        const std::uint8_t* source =
-            packed + (output * blocks + block) * 10;
-        std::int32_t dot = 0;
-        for (int input = 0; input < 32; ++input) {
-          const int code =
-              (source[2 + input / 4] >> (2 * (input % 4))) & 3;
-          dot += (code - 1) *
-                 static_cast<int>(x[row * k + block * 32 + input]);
+  threading::parallel_ranges(
+      m * n, 32, [&](long long begin, long long end, int) {
+        for (long long item = begin; item < end; ++item) {
+          const long long row = item / n;
+          const long long output = item % n;
+          double result = 0.0;
+          for (long long block = 0; block < blocks; ++block) {
+            const std::uint8_t* source =
+                packed + (output * blocks + block) * 10;
+            std::int32_t dot = 0;
+            for (int input = 0; input < 32; ++input) {
+              const int code = (source[2 + input / 4] >> (2 * (input % 4))) & 3;
+              dot += (code - 1) *
+                     static_cast<int>(x[row * k + block * 32 + input]);
+            }
+            result += half_at(source) * dot;
+          }
+          y[item] = static_cast<float>(result * activation_scale[row]);
         }
-        result += half_at(source) * dot;
-      }
-      y[item] = static_cast<float>(result * activation_scale[row]);
-    }
-  });
+      });
   return Status::kOk;
 }
 
 Status qgemm_w8a8(const std::int8_t* weights, const std::int8_t* x,
                   const float* weight_scale, const float* activation_scale,
                   float* y, long long m, long long n, long long k) {
-  return int8_gemm(weights, x, weight_scale, activation_scale, nullptr,
-                   nullptr, y, m, n, k, false);
+  return int8_gemm(weights, x, weight_scale, activation_scale, nullptr, nullptr,
+                   y, m, n, k, false);
 }
 
-Status qgemm_w8a8_azp(
-    const std::int8_t* weights, const std::int8_t* x,
-    const float* weight_scale, const float* activation_scale,
-    const std::int32_t* weight_row_sum, const int* activation_zero_point,
-    float* y, long long m, long long n, long long k) {
+Status qgemm_w8a8_azp(const std::int8_t* weights, const std::int8_t* x,
+                      const float* weight_scale, const float* activation_scale,
+                      const std::int32_t* weight_row_sum,
+                      const int* activation_zero_point, float* y, long long m,
+                      long long n, long long k) {
   return int8_gemm(weights, x, weight_scale, activation_scale, weight_row_sum,
                    activation_zero_point, y, m, n, k, true);
 }
@@ -175,28 +173,28 @@ Status qgemv_w2a8_v2(const void* packed_weights, const std::int8_t* x,
   return bitnet_int8_gemm(packed_weights, x, activation_scale, y, 1, n, k);
 }
 
-Status fp8_scaled_gemm(const std::uint8_t* weights,
-                       const std::uint8_t* x, const float* weight_scale,
-                       const float* activation_scale, float* y, long long m,
-                       long long n, long long k, Float8Format format) {
+Status fp8_scaled_gemm(const std::uint8_t* weights, const std::uint8_t* x,
+                       const float* weight_scale, const float* activation_scale,
+                       float* y, long long m, long long n, long long k,
+                       Float8Format format) {
   if (!detail::valid_product({m, n, k})) return Status::kInvalidShape;
   if (!detail::all_nonnull(weights, x, weight_scale, activation_scale, y)) {
     return Status::kInvalidArgument;
   }
-  threading::parallel_ranges(m * n, 32,
-                             [&](long long begin, long long end, int) {
-    for (long long item = begin; item < end; ++item) {
-      const long long row = item / n;
-      const long long output = item % n;
-      double sum = 0.0;
-      for (long long input = 0; input < k; ++input) {
-        sum += float8_decode(weights[output * k + input], format) *
-               float8_decode(x[row * k + input], format);
-      }
-      y[item] = static_cast<float>(sum * weight_scale[output] *
-                                   activation_scale[row]);
-    }
-  });
+  threading::parallel_ranges(
+      m * n, 32, [&](long long begin, long long end, int) {
+        for (long long item = begin; item < end; ++item) {
+          const long long row = item / n;
+          const long long output = item % n;
+          double sum = 0.0;
+          for (long long input = 0; input < k; ++input) {
+            sum += float8_decode(weights[output * k + input], format) *
+                   float8_decode(x[row * k + input], format);
+          }
+          y[item] = static_cast<float>(sum * weight_scale[output] *
+                                       activation_scale[row]);
+        }
+      });
   return Status::kOk;
 }
 
@@ -238,8 +236,8 @@ Status fp8_blockscale_gemm(const std::uint8_t* weights, const float* x,
     for (long long output = 0; output < n; ++output) {
       double sum = 0.0;
       for (long long input = 0; input < k; ++input) {
-        const float scale = tile_scales[(output / block_n) * scale_columns +
-                                        input / block_k];
+        const float scale =
+            tile_scales[(output / block_n) * scale_columns + input / block_k];
         if (!std::isfinite(scale)) return Status::kInvalidArgument;
         sum += x[row * k + input] *
                float8_decode(weights[output * k + input], format) * scale;
@@ -250,8 +248,8 @@ Status fp8_blockscale_gemm(const std::uint8_t* weights, const float* x,
   return Status::kOk;
 }
 
-Status bitnet_fused_gemm(const void* packed_weights, const float* x,
-                         float* y, long long m, long long n, long long k) {
+Status bitnet_fused_gemm(const void* packed_weights, const float* x, float* y,
+                         long long m, long long n, long long k) {
   if (!detail::valid_product({m, n, k}) || k % 32 != 0) {
     return Status::kInvalidShape;
   }
@@ -261,10 +259,9 @@ Status bitnet_fused_gemm(const void* packed_weights, const float* x,
   std::vector<std::int8_t> codes(static_cast<std::size_t>(m * k));
   std::vector<float> scales(static_cast<std::size_t>(m));
   Status status = quantize_int8(x, codes.data(), scales.data(), m, k, k);
-  return status == Status::kOk
-             ? bitnet_int8_gemm(packed_weights, codes.data(), scales.data(), y,
-                                m, n, k)
-             : status;
+  return status == Status::kOk ? bitnet_int8_gemm(packed_weights, codes.data(),
+                                                  scales.data(), y, m, n, k)
+                               : status;
 }
 
 Status qgemm_w2a8_fused(const void* packed_weights, const float* x, float* y,

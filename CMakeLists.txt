@@ -13,6 +13,8 @@ include(QuixiCoreCPUFeatures)
 option(QUIXICORE_CPU_BUILD_TESTS "Build QuixiCore CPU tests" ON)
 option(QUIXICORE_CPU_BUILD_TOOLS "Build QuixiCore CPU command-line tools" ON)
 option(QUIXICORE_CPU_BUILD_BENCHMARKS "Build QuixiCore CPU benchmark harness" ON)
+option(QUIXICORE_CPU_ENABLE_ISA_VARIANTS
+  "Build optional per-source ISA kernel variants" ON)
 
 # Baseline sources build with no ISA-specific flags so one binary per
 # architecture runs on any CPU of that architecture. ISA kernel variants are
@@ -34,18 +36,29 @@ add_library(quixicore_cpu STATIC
   src/memory/packed_weights.cpp
   src/threading/thread_pool.cpp
   kernels/activations/activations_ref.cpp
+  kernels/audio/conv1d_ref.cpp
+  kernels/audio/relative_attention_ref.cpp
   kernels/attention/attention_ref.cpp
+  kernels/attention/cross_attention_ref.cpp
   kernels/attention/attention_extended_ref.cpp
+  kernels/attention/attention_q8_kv.cpp
+  kernels/attention/rotary_positioned_ref.cpp
+  kernels/attention/vision_rope_ref.cpp
   kernels/attention/attention_composites_ref.cpp
   kernels/attention/attention_serving_ref.cpp
+  kernels/attention/attention_mxfp8.cpp
+  kernels/attention/attention_turboquant.cpp
+  kernels/attention/attention_bitnet_kv3.cpp
   kernels/attention/mla_fp8_ref.cpp
   kernels/attention/mla_absorb_ref.cpp
   kernels/attention/varlen_metadata_ref.cpp
   kernels/collectives/collectives_ref.cpp
   kernels/linear_attention/linear_attention_ref.cpp
   kernels/linear_attention/linear_attention_extended_ref.cpp
+  kernels/linear_attention/gdn_ref.cpp
   kernels/linear_attention/llama_recurrent_ref.cpp
   kernels/matmul/dense_gemm_ref.cpp
+  kernels/matmul/lora_ref.cpp
   kernels/matmul/matmul_extended_ref.cpp
   kernels/moe/moe_ref.cpp
   kernels/moe/moe_extended_ref.cpp
@@ -56,6 +69,7 @@ add_library(quixicore_cpu STATIC
   kernels/norms/rms_norm_neon.cpp
   kernels/optimizers/adamw_ref.cpp
   kernels/quantization/qgemv_ref.cpp
+  kernels/quantization/base_q_ref.cpp
   kernels/quantization/activation_quant_ref.cpp
   kernels/quantization/iq_pack_ref.cpp
   kernels/quantization/qgemv_fused_ref.cpp
@@ -72,6 +86,7 @@ add_library(quixicore_cpu STATIC
   kernels/quantization/qgemv_w8a8_ref.cpp
   kernels/quantization/qgemm_ref.cpp
   kernels/quantization/qgemm_panel.cpp
+  kernels/quantization/qgemm_canonical.cpp
   kernels/quantization/qgemm_extended_ref.cpp
   kernels/quantization/lm_head_ref.cpp
   kernels/quantization/int8_gemm_ref.cpp
@@ -88,6 +103,7 @@ add_library(quixicore_cpu STATIC
   kernels/serving/serving_extended_ref.cpp
   kernels/serving/kv_cache_extended_ref.cpp
   kernels/serving/serving_quant_ref.cpp
+  kernels/serving/basert_ref.cpp
   kernels/serving/sparse_metadata_ref.cpp
   kernels/softmax/softmax_ref.cpp
   kernels/ssm/selective_scan_ref.cpp
@@ -99,6 +115,7 @@ add_library(quixicore_cpu STATIC
   kernels/utils/kd_ref.cpp
   kernels/vision/vision_ref.cpp
   kernels/vision/conv_pool_ref.cpp
+  kernels/vision/patch_ops_ref.cpp
 )
 add_library(QuixiCoreCPU::quixicore_cpu ALIAS quixicore_cpu)
 
@@ -162,7 +179,9 @@ quixicore_cpu_add_isa_sources(quixicore_cpu ISA avx2
           kernels/quantization/w8a32_gemm_avx2.cpp
           kernels/quantization/lowbit_w8a8_avx2.cpp
           kernels/quantization/lowbit_avx2.cpp
-          kernels/quantization/qgemv_gguf_avx2.cpp)
+          kernels/quantization/qgemm_canonical_avx2.cpp
+          kernels/quantization/qgemv_gguf_avx2.cpp
+          kernels/utils/float_storage_avx2.cpp)
 if(QUIXICORE_CPU_ISA_AVX2_SUPPORTED)
   target_compile_definitions(quixicore_cpu
     PRIVATE QUIXICORE_CPU_HAVE_INT8_GEMM_AVX2=1)
@@ -173,7 +192,11 @@ if(QUIXICORE_CPU_ISA_AVX2_SUPPORTED)
   target_compile_definitions(quixicore_cpu
     PRIVATE QUIXICORE_CPU_HAVE_LOWBIT_AVX2=1)
   target_compile_definitions(quixicore_cpu
+    PRIVATE QUIXICORE_CPU_HAVE_CANONICAL_GEMM_AVX2=1)
+  target_compile_definitions(quixicore_cpu
     PRIVATE QUIXICORE_CPU_HAVE_GGUF_GEMV_AVX2=1)
+  target_compile_definitions(quixicore_cpu
+    PRIVATE QUIXICORE_CPU_HAVE_FLOAT_STORAGE_AVX2=1)
 endif()
 
 quixicore_cpu_add_isa_sources(quixicore_cpu ISA avx512
@@ -230,6 +253,18 @@ if(QUIXICORE_CPU_BUILD_TESTS)
   target_link_libraries(test_float_storage PRIVATE QuixiCoreCPU::quixicore_cpu)
   add_test(NAME float_storage COMMAND test_float_storage)
 
+  add_executable(test_gdn tests/correctness/test_gdn.cpp)
+  target_link_libraries(test_gdn PRIVATE QuixiCoreCPU::quixicore_cpu)
+  add_test(NAME gdn COMMAND test_gdn)
+
+  add_executable(test_lora tests/correctness/test_lora.cpp)
+  target_link_libraries(test_lora PRIVATE QuixiCoreCPU::quixicore_cpu)
+  add_test(NAME lora COMMAND test_lora)
+
+  add_executable(test_basert tests/correctness/test_basert.cpp)
+  target_link_libraries(test_basert PRIVATE QuixiCoreCPU::quixicore_cpu)
+  add_test(NAME basert COMMAND test_basert)
+
   add_executable(test_qgemv tests/correctness/test_qgemv.cpp)
   target_link_libraries(test_qgemv PRIVATE QuixiCoreCPU::quixicore_cpu)
   target_include_directories(test_qgemv
@@ -258,12 +293,29 @@ if(QUIXICORE_CPU_BUILD_TESTS)
   add_test(NAME gguf_formats_forced_ref COMMAND test_gguf_formats)
   set_tests_properties(gguf_formats_forced_ref PROPERTIES
     ENVIRONMENT "QUIXICORE_CPU_GGUF_GEMV_VARIANT=ref")
+  add_test(NAME gguf_formats_forced_blocked_ref COMMAND test_gguf_formats)
+  set_tests_properties(gguf_formats_forced_blocked_ref PROPERTIES
+    ENVIRONMENT "QUIXICORE_CPU_GGUF_GEMV_VARIANT=blocked_ref")
+  if(QUIXICORE_CPU_ISA_AVX2_SUPPORTED)
+    add_test(NAME gguf_formats_forced_avx2 COMMAND test_gguf_formats)
+    set_tests_properties(gguf_formats_forced_avx2 PROPERTIES
+      ENVIRONMENT "QUIXICORE_CPU_GGUF_GEMV_VARIANT=avx2")
+  endif()
+  if(QUIXICORE_CPU_ISA_AVX512_SUPPORTED)
+    add_test(NAME gguf_formats_forced_avx512 COMMAND test_gguf_formats)
+    set_tests_properties(gguf_formats_forced_avx512 PROPERTIES
+      ENVIRONMENT "QUIXICORE_CPU_GGUF_GEMV_VARIANT=avx512")
+  endif()
 
   add_executable(test_quant_activation
     tests/correctness/test_quant_activation.cpp)
   target_link_libraries(test_quant_activation
     PRIVATE QuixiCoreCPU::quixicore_cpu)
   add_test(NAME quant_activation COMMAND test_quant_activation)
+
+  add_executable(test_base_q tests/correctness/test_base_q.cpp)
+  target_link_libraries(test_base_q PRIVATE QuixiCoreCPU::quixicore_cpu)
+  add_test(NAME base_q COMMAND test_base_q)
 
   add_executable(test_quantization tests/correctness/test_quantization.cpp)
   target_link_libraries(test_quantization PRIVATE QuixiCoreCPU::quixicore_cpu)
@@ -284,6 +336,24 @@ if(QUIXICORE_CPU_BUILD_TESTS)
   target_link_libraries(test_quant_import
     PRIVATE QuixiCoreCPU::quixicore_cpu)
   add_test(NAME quant_import COMMAND test_quant_import)
+
+  add_executable(test_quant_projection_matrix
+    tests/correctness/test_quant_projection_matrix.cpp)
+  target_link_libraries(test_quant_projection_matrix
+    PRIVATE QuixiCoreCPU::quixicore_cpu)
+  add_test(NAME quant_projection_matrix COMMAND test_quant_projection_matrix)
+
+  add_executable(test_norm_quant_matrix
+    tests/correctness/test_norm_quant_matrix.cpp)
+  target_link_libraries(test_norm_quant_matrix
+    PRIVATE QuixiCoreCPU::quixicore_cpu)
+  add_test(NAME norm_quant_matrix COMMAND test_norm_quant_matrix)
+
+  add_executable(test_quant_serving_matrix
+    tests/correctness/test_quant_serving_matrix.cpp)
+  target_link_libraries(test_quant_serving_matrix
+    PRIVATE QuixiCoreCPU::quixicore_cpu)
+  add_test(NAME quant_serving_matrix COMMAND test_quant_serving_matrix)
 
   add_executable(test_tensor_ops tests/correctness/test_tensor_ops.cpp)
   target_link_libraries(test_tensor_ops PRIVATE QuixiCoreCPU::quixicore_cpu)
@@ -319,6 +389,16 @@ if(QUIXICORE_CPU_BUILD_TESTS)
     set_tests_properties(int8_gemm_forced_dotprod PROPERTIES
       ENVIRONMENT "QUIXICORE_CPU_INT8_GEMM_VARIANT=dotprod")
   endif()
+  if(QUIXICORE_CPU_ISA_AVX2_SUPPORTED)
+    add_test(NAME int8_gemm_forced_avx2 COMMAND test_int8_gemm)
+    set_tests_properties(int8_gemm_forced_avx2 PROPERTIES
+      ENVIRONMENT "QUIXICORE_CPU_INT8_GEMM_VARIANT=avx2")
+  endif()
+  if(QUIXICORE_CPU_ISA_AVX512_VNNI_SUPPORTED)
+    add_test(NAME int8_gemm_forced_avx512_vnni COMMAND test_int8_gemm)
+    set_tests_properties(int8_gemm_forced_avx512_vnni PROPERTIES
+      ENVIRONMENT "QUIXICORE_CPU_INT8_GEMM_VARIANT=avx512_vnni")
+  endif()
 
   add_executable(test_w8a32_gemm tests/correctness/test_w8a32_gemm.cpp)
   target_link_libraries(test_w8a32_gemm PRIVATE QuixiCoreCPU::quixicore_cpu)
@@ -331,12 +411,21 @@ if(QUIXICORE_CPU_BUILD_TESTS)
     set_tests_properties(w8a32_gemm_forced_neon PROPERTIES
       ENVIRONMENT "QUIXICORE_CPU_W8A32_VARIANT=neon")
   endif()
+  if(QUIXICORE_CPU_ISA_AVX2_SUPPORTED)
+    add_test(NAME w8a32_gemm_forced_avx2 COMMAND test_w8a32_gemm)
+    set_tests_properties(w8a32_gemm_forced_avx2 PROPERTIES
+      ENVIRONMENT "QUIXICORE_CPU_W8A32_VARIANT=avx2")
+  endif()
+  if(QUIXICORE_CPU_ISA_AVX512_SUPPORTED)
+    add_test(NAME w8a32_gemm_forced_avx512 COMMAND test_w8a32_gemm)
+    set_tests_properties(w8a32_gemm_forced_avx512 PROPERTIES
+      ENVIRONMENT "QUIXICORE_CPU_W8A32_VARIANT=avx512")
+  endif()
   if(QUIXICORE_CPU_ISA_I8MM_SUPPORTED)
     add_test(NAME int8_gemm_forced_i8mm COMMAND test_int8_gemm)
     set_tests_properties(int8_gemm_forced_i8mm PROPERTIES
       ENVIRONMENT "QUIXICORE_CPU_INT8_GEMM_VARIANT=i8mm")
   endif()
-
   add_executable(test_lowbit_w8a8
     tests/correctness/test_lowbit_w8a8.cpp)
   target_link_libraries(test_lowbit_w8a8
@@ -354,6 +443,16 @@ if(QUIXICORE_CPU_BUILD_TESTS)
     add_test(NAME lowbit_w8a8_forced_i8mm COMMAND test_lowbit_w8a8)
     set_tests_properties(lowbit_w8a8_forced_i8mm PROPERTIES
       ENVIRONMENT "QUIXICORE_CPU_LOWBIT_W8A8_VARIANT=i8mm")
+  endif()
+  if(QUIXICORE_CPU_ISA_AVX2_SUPPORTED)
+    add_test(NAME lowbit_w8a8_forced_avx2 COMMAND test_lowbit_w8a8)
+    set_tests_properties(lowbit_w8a8_forced_avx2 PROPERTIES
+      ENVIRONMENT "QUIXICORE_CPU_LOWBIT_W8A8_VARIANT=avx2")
+  endif()
+  if(QUIXICORE_CPU_ISA_AVX512_VNNI_SUPPORTED)
+    add_test(NAME lowbit_w8a8_forced_avx512_vnni COMMAND test_lowbit_w8a8)
+    set_tests_properties(lowbit_w8a8_forced_avx512_vnni PROPERTIES
+      ENVIRONMENT "QUIXICORE_CPU_LOWBIT_W8A8_VARIANT=avx512_vnni")
   endif()
 
   add_executable(test_projection_ops tests/correctness/test_projection_ops.cpp)
@@ -383,6 +482,12 @@ if(QUIXICORE_CPU_BUILD_TESTS)
   add_executable(test_serving_metadata tests/correctness/test_serving_metadata.cpp)
   target_link_libraries(test_serving_metadata PRIVATE QuixiCoreCPU::quixicore_cpu)
   add_test(NAME serving_metadata COMMAND test_serving_metadata)
+
+  add_executable(test_quant_cache_attention
+    tests/correctness/test_quant_cache_attention.cpp)
+  target_link_libraries(test_quant_cache_attention
+    PRIVATE QuixiCoreCPU::quixicore_cpu)
+  add_test(NAME quant_cache_attention COMMAND test_quant_cache_attention)
 
   add_executable(test_remaining_ops tests/correctness/test_remaining_ops.cpp)
   target_link_libraries(test_remaining_ops PRIVATE QuixiCoreCPU::quixicore_cpu)

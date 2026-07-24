@@ -34,8 +34,8 @@ enum class CpuPreparedIsa {
 
 struct CpuPackedWeightsInfo {
   QuantFormat format = QuantFormat::kQ8_0;
-  CanonicalQuantLayout canonical_layout =
-      CanonicalQuantLayout::kInt4Symmetric;
+  CanonicalQuantLayout canonical_layout = CanonicalQuantLayout::kInt4Symmetric;
+  QuantTensorMetadata quant_metadata{};
   bool has_canonical_layout = false;
   CpuPanelLayout layout = CpuPanelLayout::kPortableRows1;
   long long rows = 0;

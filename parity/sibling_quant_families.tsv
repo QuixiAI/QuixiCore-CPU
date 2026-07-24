@@ -1,4 +1,6 @@
 source	format	cpu_mapping	status
+QuixiCore-Metal	base_qn	base_q_dequant/base_q_gemv/base_q_gemm	mapped
+QuixiCore-Metal	q8_0_kv	kv_cache_scatter_q8_0/kv_cache_gather_q8_0/kv_cache_copy_blocks_q8_0/paged_attention_q8_0	mapped
 QuixiCore-Metal	gguf	qgemv	mapped
 QuixiCore-Metal	mx	qgemv/mxfp8_gemm/mxfp4_gemv	mapped
 QuixiCore-Metal	fp8	fp8_scaled_gemm	mapped

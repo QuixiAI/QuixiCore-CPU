@@ -2,8 +2,12 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <vector>
+
+#include "quixicore_cpu/cpu_features.h"
 
 namespace {
 
@@ -80,6 +84,22 @@ bool check_shape(long long m, long long n, long long k, bool asymmetric) {
 }  // namespace
 
 int main() {
+  if (const char* forced = std::getenv("QUIXICORE_CPU_INT8_GEMM_VARIANT")) {
+    const quixicore_cpu::CpuFeatures& features = quixicore_cpu::cpu_features();
+    const bool available =
+        std::strcmp(forced, "ref") == 0 ||
+        (std::strcmp(forced, "avx2") == 0 && features.avx2) ||
+        (std::strcmp(forced, "dotprod") == 0 && features.dotprod) ||
+        (std::strcmp(forced, "i8mm") == 0 && features.i8mm) ||
+        (std::strcmp(forced, "avx512_vnni") == 0 && features.avx512_vnni);
+    if (available &&
+        std::strcmp(quixicore_cpu::int8_gemm_variant(), forced) != 0) {
+      std::cerr << "FAIL: requested int8 GEMM route " << forced
+                << " but selected " << quixicore_cpu::int8_gemm_variant()
+                << '\n';
+      return 1;
+    }
+  }
   constexpr long long kSizes[] = {1, 15, 16, 17, 63, 64, 65, 100, 1408};
   bool ok = true;
   for (long long m = 1; m <= 5 && ok; ++m) {

@@ -30,14 +30,14 @@ constexpr Variant kVariants[] = {
 };
 
 const Variant& resolve() {
-  static const Variant& chosen = []() -> const Variant& {
+  static const Variant* chosen = []() -> const Variant* {
     const CpuFeatures& features = cpu_features();
     const char* forced = std::getenv("QUIXICORE_CPU_RMS_NORM_VARIANT");
     if (forced != nullptr) {
       for (const auto& variant : kVariants) {
         if (std::strcmp(variant.name, forced) == 0 &&
             variant.supported(features)) {
-          return variant;
+          return &variant;
         }
       }
     }
@@ -47,9 +47,9 @@ const Variant& resolve() {
         best = &variant;
       }
     }
-    return *best;
+    return best;
   }();
-  return chosen;
+  return *chosen;
 }
 
 }  // namespace

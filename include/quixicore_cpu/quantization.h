@@ -2,11 +2,26 @@
 
 #include <cstdint>
 
+#include "quixicore_cpu/float_storage.h"
 #include "quixicore_cpu/status.h"
 
 namespace quixicore_cpu {
 
+enum class CanonicalQuantLayout;
+struct CanonicalQuantTensor;
+
 enum class Float8Format { kE4M3FN, kE5M2 };
+
+enum class BitNetKv3ScaleType { kFP16, kFP32 };
+enum class BitNetKv3Signedness { kUnsigned, kSigned };
+enum class BitNetKv3ZeroPointMode { kNone, kInteger };
+
+struct BitNetKv3Config {
+  long long group_size = 32;
+  BitNetKv3ScaleType scale_type = BitNetKv3ScaleType::kFP16;
+  BitNetKv3Signedness signedness = BitNetKv3Signedness::kSigned;
+  BitNetKv3ZeroPointMode zero_point_mode = BitNetKv3ZeroPointMode::kNone;
+};
 
 // Portable float8 conversion. Encoding uses round-to-nearest-even and saturates
 // finite overflow to the largest finite value. NaNs retain NaN semantics.
@@ -19,44 +34,37 @@ float float8_decode(std::uint8_t code, Float8Format format);
 // nibble and requires an even element count.
 std::uint8_t fp4_e2m1_encode(float value);
 float fp4_e2m1_decode(std::uint8_t code);
-Status fp32_to_fp4x2(const float* x, std::uint8_t* packed,
-                     long long count);
-Status fp4x2_to_fp32(const std::uint8_t* packed, float* out,
-                     long long count);
+Status fp32_to_fp4x2(const float* x, std::uint8_t* packed, long long count);
+Status fp4x2_to_fp32(const std::uint8_t* packed, float* out, long long count);
 
 // Dynamic symmetric quantization over contiguous groups in each row. A
 // group_size of zero means one group per row. scales is [rows,dim/group_size].
 Status quantize_int8(const float* x, std::int8_t* codes, float* scales,
-                     long long rows, long long dim,
-                     long long group_size = 0);
+                     long long rows, long long dim, long long group_size = 0);
 Status dequantize_int8(const std::int8_t* codes, const float* scales,
                        float* out, long long rows, long long dim,
                        long long group_size = 0);
 
 // Per-row asymmetric INT8. Reconstruct with scale[row]*(code-zero_point[row]).
 Status quantize_int8_asymmetric(const float* x, std::int8_t* codes,
-                                float* scales, int* zero_points,
-                                long long rows, long long dim);
-Status dequantize_int8_asymmetric(const std::int8_t* codes,
-                                  const float* scales,
+                                float* scales, int* zero_points, long long rows,
+                                long long dim);
+Status dequantize_int8_asymmetric(const std::int8_t* codes, const float* scales,
                                   const int* zero_points, float* out,
                                   long long rows, long long dim);
 
 // Signed symmetric INT4, two two's-complement nibbles per byte. Groups run
 // along the last dimension and must divide dim.
-Status quantize_int4_group(const float* x, std::uint8_t* packed,
-                           float* scales, long long rows, long long dim,
-                           long long group_size);
-Status dequantize_int4_group(const std::uint8_t* packed,
-                             const float* scales, float* out,
-                             long long rows, long long dim,
+Status quantize_int4_group(const float* x, std::uint8_t* packed, float* scales,
+                           long long rows, long long dim, long long group_size);
+Status dequantize_int4_group(const std::uint8_t* packed, const float* scales,
+                             float* out, long long rows, long long dim,
                              long long group_size);
 
 // Dynamic float8 quantization. E4M3FN matches the runtime activation quantizer
 // used by sibling backends. power_of_two_scale implements UE8M0/MX scaling.
 Status quantize_float8(const float* x, std::uint8_t* codes, float* scales,
-                       long long rows, long long dim,
-                       long long group_size = 0,
+                       long long rows, long long dim, long long group_size = 0,
                        Float8Format format = Float8Format::kE4M3FN,
                        bool power_of_two_scale = false);
 Status dequantize_float8(const std::uint8_t* codes, const float* scales,
@@ -82,56 +90,78 @@ Status fake_quant_int8(const float* x, float* out, std::int8_t* codes,
 Status silu_mul_fake_quant_int8(const float* x, const float* gate, float* out,
                                 std::int8_t* codes, float* scales,
                                 long long rows, long long dim,
-                                bool oai_mode = false,
-                                float alpha = 1.0f,
+                                bool oai_mode = false, float alpha = 1.0f,
                                 float limit = 0.0f);
 Status silu_mul_quant_int8(const float* x, const float* gate,
                            std::int8_t* codes, float* scales, long long rows,
                            long long dim, bool oai_mode = false,
                            float alpha = 1.702f, float limit = 7.0f);
-Status silu_mul_quant_float8(
-    const float* x, const float* gate, std::uint8_t* codes, float* scales,
-    long long rows, long long dim, long long group_size = 0,
-    bool power_of_two_scale = false, bool oai_mode = false,
-    float alpha = 1.702f, float limit = 7.0f,
-    Float8Format format = Float8Format::kE4M3FN);
+Status silu_mul_quant_float8(const float* x, const float* gate,
+                             std::uint8_t* codes, float* scales, long long rows,
+                             long long dim, long long group_size = 0,
+                             bool power_of_two_scale = false,
+                             bool oai_mode = false, float alpha = 1.702f,
+                             float limit = 7.0f,
+                             Float8Format format = Float8Format::kE4M3FN);
 Status fake_quant_float8(const float* x, float* out, std::uint8_t* codes,
                          float* scale, long long count,
                          Float8Format format = Float8Format::kE4M3FN);
 
 // Residual-add + normalization + dynamic activation quantization. Scales are
 // per row when group_size==0 and per group otherwise.
-Status rms_norm_add_quant_int8(
-    const float* x, const float* residual, const float* weight,
-    std::int8_t* codes, float* residual_out, float* scales, long long rows,
-    long long hidden, float eps = 1e-5f, long long group_size = 0);
-Status layer_norm_add_quant_int8(
-    const float* x, const float* residual, const float* weight,
-    const float* bias, std::int8_t* codes, float* residual_out,
-    float* scales, long long rows, long long hidden, float eps = 1e-5f,
-    long long group_size = 0);
-Status rms_norm_add_quant_float8(
-    const float* x, const float* residual, const float* weight,
-    std::uint8_t* codes, float* residual_out, float* scales, long long rows,
-    long long hidden, float eps = 1e-5f, long long group_size = 0,
-    bool power_of_two_scale = false,
-    Float8Format format = Float8Format::kE4M3FN);
-Status layer_norm_add_quant_float8(
-    const float* x, const float* residual, const float* weight,
-    const float* bias, std::uint8_t* codes, float* residual_out,
-    float* scales, long long rows, long long hidden, float eps = 1e-5f,
-    long long group_size = 0, bool power_of_two_scale = false,
-    Float8Format format = Float8Format::kE4M3FN);
+Status rms_norm_add_quant_int8(const float* x, const float* residual,
+                               const float* weight, std::int8_t* codes,
+                               float* residual_out, float* scales,
+                               long long rows, long long hidden,
+                               float eps = 1e-5f, long long group_size = 0);
+Status layer_norm_add_quant_int8(const float* x, const float* residual,
+                                 const float* weight, const float* bias,
+                                 std::int8_t* codes, float* residual_out,
+                                 float* scales, long long rows,
+                                 long long hidden, float eps = 1e-5f,
+                                 long long group_size = 0);
+Status rms_norm_add_quant_float8(const float* x, const float* residual,
+                                 const float* weight, std::uint8_t* codes,
+                                 float* residual_out, float* scales,
+                                 long long rows, long long hidden,
+                                 float eps = 1e-5f, long long group_size = 0,
+                                 bool power_of_two_scale = false,
+                                 Float8Format format = Float8Format::kE4M3FN);
+Status layer_norm_add_quant_float8(const float* x, const float* residual,
+                                   const float* weight, const float* bias,
+                                   std::uint8_t* codes, float* residual_out,
+                                   float* scales, long long rows,
+                                   long long hidden, float eps = 1e-5f,
+                                   long long group_size = 0,
+                                   bool power_of_two_scale = false,
+                                   Float8Format format = Float8Format::kE4M3FN);
 Status rms_norm_add_quant_float8_static(
     const float* x, const float* residual, const float* weight,
-    std::uint8_t* codes, float* residual_out, long long rows,
-    long long hidden, float scale, float eps = 1e-5f,
+    std::uint8_t* codes, float* residual_out, long long rows, long long hidden,
+    float scale, float eps = 1e-5f,
     Float8Format format = Float8Format::kE4M3FN);
 Status layer_norm_add_quant_float8_static(
     const float* x, const float* residual, const float* weight,
-    const float* bias, std::uint8_t* codes, float* residual_out,
-    long long rows, long long hidden, float scale, float eps = 1e-5f,
+    const float* bias, std::uint8_t* codes, float* residual_out, long long rows,
+    long long hidden, float scale, float eps = 1e-5f,
     Float8Format format = Float8Format::kE4M3FN);
+
+// Residual-add + normalization with direct canonical activation packing.
+// Inputs and residual_out may independently use f32/f16/bf16 storage. The
+// emitted packet supports symmetric/affine INT4 and INT8, standalone
+// FP4/FP8, MXFP4/MXFP8, and NVFP4. No complete normalized tensor is
+// materialized. A null/zero-count layer-norm bias means no bias.
+Status rms_norm_add_quantized_storage(
+    FloatStorageInput x, FloatStorageInput residual, FloatStorageInput weight,
+    FloatStorageOutput residual_out, CanonicalQuantLayout output_layout,
+    long long output_group_size, CanonicalQuantTensor* output, long long rows,
+    long long hidden, float eps = 1e-5f, bool scale_2d = false);
+Status layer_norm_add_quantized_storage(
+    FloatStorageInput x, FloatStorageInput residual, FloatStorageInput weight,
+    FloatStorageInput bias, FloatStorageOutput residual_out,
+    CanonicalQuantLayout output_layout, long long output_group_size,
+    CanonicalQuantTensor* output, long long rows, long long hidden,
+    float eps = 1e-5f, bool scale_2d = false);
 
 // BitNet blocks are byte-compatible {fp16 scale, 8 packed 2-bit codes}; K and
 // group_k must be divisible by 32. Packed storage is rows*(K/32)*10 bytes.
@@ -149,29 +179,44 @@ Status ternary_code_flip_count(const std::uint8_t* a, const std::uint8_t* b,
 // llama.cpp TQ2_0: one 66-byte block per 256 values ({qs[64], fp16 d}).
 Status tq2_0_pack(const float* weights, std::uint8_t* packed,
                   float* dequantized, long long rows, long long k);
-Status tq2_0_unpack(const std::uint8_t* packed, float* weights,
-                    long long rows, long long k);
+Status tq2_0_unpack(const std::uint8_t* packed, float* weights, long long rows,
+                    long long k);
 
 // TurboQuant KV codec. Caches are flattened [slots,heads,packed_bytes] and
 // scales/zero-points [slots,heads,head_size/32]. Scale outputs are half-rounded
 // but exposed as f32 on CPU. signs is [head_size] and centroids [2^value_bits].
 Status turboquant_packed_bytes(long long head_size, int bits,
                                long long* packed_bytes);
-Status turboquant_encode(
-    const float* key, const float* value, const int* slot_mapping,
-    const float* value_centroids, const float* signs,
-    std::uint8_t* key_cache, std::uint8_t* value_cache,
-    float* key_scale_cache, float* value_scale_cache,
-    float* key_zero_cache, long long tokens, long long slots,
-    long long heads, long long head_size, int key_bits,
-    bool key_signed, int value_bits);
+Status turboquant_encode(const float* key, const float* value,
+                         const int* slot_mapping, const float* value_centroids,
+                         const float* signs, std::uint8_t* key_cache,
+                         std::uint8_t* value_cache, float* key_scale_cache,
+                         float* value_scale_cache, float* key_zero_cache,
+                         long long tokens, long long slots, long long heads,
+                         long long head_size, int key_bits, bool key_signed,
+                         int value_bits);
 Status turboquant_decode(
     const std::uint8_t* key_cache, const std::uint8_t* value_cache,
     const float* key_scale_cache, const float* value_scale_cache,
     const float* key_zero_cache, const int* slots_to_gather,
     const float* value_centroids, const float* signs, float* key_out,
-    float* value_out, long long cache_slots, long long rows,
-    long long heads, long long head_size, int key_bits,
-    bool key_signed, int value_bits);
+    float* value_out, long long cache_slots, long long rows, long long heads,
+    long long head_size, int key_bits, bool key_signed, int value_bits);
+Status turboquant_encode_storage(
+    FloatStorageInput key, FloatStorageInput value, const int* slot_mapping,
+    const float* value_centroids, const float* signs, std::uint8_t* key_cache,
+    std::uint8_t* value_cache, float* key_scale_cache, float* value_scale_cache,
+    float* key_zero_cache, long long tokens, long long slots, long long heads,
+    long long head_size, int key_bits, bool key_signed, int value_bits,
+    FloatStorageWorkspace* workspace = nullptr);
+Status turboquant_decode_storage(
+    const std::uint8_t* key_cache, const std::uint8_t* value_cache,
+    const float* key_scale_cache, const float* value_scale_cache,
+    const float* key_zero_cache, const int* slots_to_gather,
+    const float* value_centroids, const float* signs,
+    FloatStorageOutput key_out, FloatStorageOutput value_out,
+    long long cache_slots, long long rows, long long heads, long long head_size,
+    int key_bits, bool key_signed, int value_bits,
+    FloatStorageWorkspace* workspace = nullptr);
 
 }  // namespace quixicore_cpu

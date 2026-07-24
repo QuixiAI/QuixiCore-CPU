@@ -118,6 +118,83 @@ failed oracle produces an `error` row and a nonzero process exit:
 - `quant_import` — canonical INT4/U4/INT8/FP8/FP4/MX/NV/BitNet conversion,
   AWQ/GPTQ/SmoothQuant checkpoint normalization, and canonical-to-CPU panel
   preparation. Conversion and preparation are deliberately inside timing.
+- `base_q` — direct packed BaseQ2/3/4/5/6/8 GEMV at M=1 and tiled GEMM at
+  M=16, using BF16 affine group metadata and FP32 activation/output storage.
+  Every case checks against independently materialized weights and an FP64
+  projection oracle; the same-run dense comparator excludes dequantization.
+- `quant_gate_up` — paired canonical gate/up projection for representative
+  INT4, FP8, MXFP4, and BitNet weights at M=1/16/128. The target owns both
+  traversals under one CPU schedule and is checked against independent FP64
+  oracles; the comparator makes two prepared projection calls.
+- `quant_swiglu` — the same paired projection with direct FP32 SwiGLU output,
+  compared with paired gate/up output plus a separate activation pass.
+- `quant_swiglu_quant` — direct group-A8 packing from paired SwiGLU at
+  M=1/16/128. The same-binary comparator runs the fused typed-output SwiGLU
+  kernel and standalone canonical quantizer; correctness uses decoded
+  canonical output. The broader A4/A8/FP8/MX/NV matrix is exercised by
+  `test_quant_projection_matrix`.
+- `quant_qkv` — unequal Nq/Nk/Nv canonical Q/K/V projection at M=1/16/128
+  for representative INT4, FP8, MXFP4, and BitNet weights. FP32 cases plus
+  direct FP16/BF16 activation-storage representatives compare one CPU schedule
+  with three public prepared projection calls; focused correctness uses three
+  independent FP64 oracles across all 11 layouts.
+- `quant_qkv_rope_kv` — single-token canonical Q/K/V projection with
+  split-half RoPE and direct cache-slot insertion for representative INT4,
+  FP8, MXFP4, and BitNet weights. FP32 plus direct FP16/BF16 activation cases
+  compare against F4 QKV followed by explicit RoPE/cache writes. The focused
+  matrix covers every canonical layout and mixed FP16/BF16 cache storage.
+- `quant_norm` — fused RMSNorm/LayerNorm residual add with direct canonical
+  INT4/INT8/FP4/FP8/MXFP4/MXFP8/NVFP4 activation packing. The same-binary
+  comparator materializes a preallocated normalized tensor before calling the
+  standalone canonical quantizer; focused correctness also covers independent
+  FP16/BF16 and mixed storage boundaries.
+- `quant_embedding` — selected-row canonical embedding gather and weighted
+  embedding-bag reduction for representative INT4, FP8, MXFP4, and BitNet
+  tables. The same-binary comparator dequantizes the complete table first;
+  the target decodes only selected rows and stores direct FP32/FP16/BF16.
+- `quant_lm_head` — prepared canonical argmax, top-k, exact top-p, packed-mask,
+  sparse-candidate, and beam selection for representative INT4, FP8, MXFP4,
+  and BitNet heads. Selection state is streamed with deterministic tie rules;
+  exact top-p retains one vocabulary row, never rows-by-vocabulary logits.
+- `quant_moe` — prepared canonical expert projection, dual-quantized
+  activation projection, fused SwiGLU, and SwiGLU with direct next-activation
+  packing for sorted or unsorted token routes. Comprehensive cases cover
+  INT4, FP8 E4M3, MXFP4/MXFP8, and NVFP4 with eight experts. Comparators use
+  one prepared GEMV per token, dequantize activations once before grouped
+  projection, or materialize fused SwiGLU before standalone quantization.
+- `quant_cache_attention` — typed E4M3FN/E5M2, canonical MXFP8, TurboQuant,
+  and BitNet a4.8 KV3 cache codecs plus direct online paged attention.
+  TurboQuant cases cover 2/4/8-bit packed K and centroid-coded rotated V;
+  KV3 cases cover signed symmetric FP16-scale and unsigned affine FP32-scale
+  streams. Attention is compared with full FP32 cache materialization; typed
+  cache I/O is compared with explicit FP32 staging and conversion.
+- `q8_kv` — Metal-compatible Q8_0 cache scatter/gather with signed-int8 codes
+  and one raw FP16 scale per 32 values, functional cache-block copy, and
+  direct compressed-cache paged attention. Codec/copy checks use independent
+  equal-work contract oracles; attention compares with complete FP32 cache
+  materialization.
+- `rotary_extended` — explicit-position partial RoPE, three-axis M-RoPE, and
+  fused positioned Q/K RMSNorm+RoPE over packed QKV. Cases cover split and
+  adjacent layouts, shared/per-batch positions, unrotated tails, and both
+  ordinary and multimodal fused paths.
+- `gdn` — functional varlen GatedDeltaNet recurrence and short convolution,
+  mixed-projection QKV preparation, decay/beta preparation, gated RMSNorm, and
+  split sigmoid/value multiplication. Every case has an independent scalar
+  contract baseline; quick shapes are measured at one and 16 threads.
+- `lora` — direct F16-adapter LoRA with FP16 rounding after both low-rank
+  projections and fused scale/base addition. Quick cases cover M=1/4/8/64 at
+  K=N=4096, R=16 using BF16 activation/base/output storage.
+- `basert_aux` — BF16 per-channel calibration absmax with optional running
+  state, scalar-bounds value clipping, and Gemma final-logit softcap over
+  BaseRT vocabulary shapes.
+- `basert_embedding` — BF16 token/type gather-add and arbitrary-mask terminal
+  mean-pool+RMSNorm+L2 normalization.
+- `basert_vision` — BF16 NHWC/NTHWC patch extraction and projection,
+  learned/factorized positions, regular/coordinate pooling, and Gemma/Qwen
+  2-D vision RoPE.
+- `basert_audio` — BF16 NWC Whisper-style general convolution,
+  symmetric/causal Conformer depthwise convolution, cross-attention, and
+  learned relative attention.
 - `llama_parity` — convolution, recurrent GLA, DSV4 hyper-connections, and the
   complete unary/GLU selectors (softplus and OpenAI SwiGLU throughput cases)
   from the exhaustive llama.cpp CPU operation audit.
@@ -131,10 +208,35 @@ failed oracle produces an `error` row and a nonzero process exit:
   Scalar, manual-unroll, explicit-staging, threaded, and runtime-gated native
   conversion routes provide the three-pass dtype optimization evidence.
 - `quant_formats`, `quant_activation`, `quant_gemv_matrix`,
-  `quant_gemm_matrix`, `quant_fusions`, `quant_serving`, `quant_kv`, and
-  `bitnet_matrix` — M0 pass-0 families that relabel existing checked reference
-  cases. Later milestones extend or replace these entries with direct format-
-  specialized cases. Registration is not a support or speedup claim.
+  `quant_gemm_matrix`, `quant_fusions`, `quant_gate_up`, `quant_swiglu`,
+  `quant_swiglu_quant`, `quant_qkv`, `quant_qkv_rope_kv`, `quant_norm`,
+  `quant_embedding`, `quant_lm_head`, `quant_moe`, `quant_cache_attention`, `quant_serving`,
+  `quant_kv`, and `bitnet_matrix` —
+  full-matrix milestone families. Most entries still relabel
+  M0 checked references; `quant_gemv_matrix` and `quant_gemm_matrix` also
+  contain M2 canonical prepared-panel cases at M=1/16/128 with a same-binary
+  predecoded scalar baseline. M=1 covers all 11 non-cache canonical layouts;
+  M=1/16/128 also cover ten direct packed weight/activation pairs spanning
+  W4A4/W4A8/W8A8, FP8/MX/NV, and BitNet A8/A4 with an independent dual-decode
+  oracle and same-binary dequantized scalar GEMV baseline. M=1 and M=16 include
+  direct FP16 and BF16 activation-storage cases for all 11 layouts; M=128 keeps
+  four INT4/FP8/MXFP4/BitNet representatives. Every typed case is checked
+  against a rounded-input FP64 oracle. Comprehensive multi-row runs retain four
+  representatives to bound suite time. `quant_fusions` additionally contains
+  M1/16/128 canonical bias+SiLU/ReLU2 epilogues for INT4, FP8, MXFP4, and
+  BitNet, including direct FP16/BF16 output representatives. Its same-binary
+  baseline is projection followed by a preallocated post-op pass. F2 gate/up
+  cases cover the same M ladder with a two-prepared-call comparator. F3 direct
+  SwiGLU and activation-quantization cases cover the same representative
+  weights without full gate/up or floating-point quantization intermediates.
+  F4 Q/K/V cases use unequal head rows, mixed direct storage, one scheduling
+  region, and selected shared activation traversal; RoPE/KV insertion remains
+  a separate F5 family. F5 projects directly into Q and the chosen ordinary
+  floating cache slot, with no separate raw Q/K/V staging allocation;
+  compressed cache formats remain M4.
+  F6/F7 norm cases pack canonical activations from row-local normalized
+  scratch and retain only per-row statistics plus bounded worker storage.
+  A registered placeholder is not by itself a support or speedup claim.
 
 ## Adding A Kernel Case
 

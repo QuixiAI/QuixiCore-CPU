@@ -1,12 +1,12 @@
-#include "quixicore_cpu/qgemm.h"
+#include "kernels/quantization/int8_gemm.h"
 
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 
 #include "kernels/common/validation.h"
-#include "kernels/quantization/int8_gemm.h"
 #include "quixicore_cpu/cpu_features.h"
+#include "quixicore_cpu/qgemm.h"
 
 namespace quixicore_cpu {
 namespace {
@@ -39,14 +39,14 @@ constexpr Variant kVariants[] = {
 };
 
 const Variant& resolve() {
-  static const Variant& selected = []() -> const Variant& {
+  static const Variant* selected = []() -> const Variant* {
     const CpuFeatures& features = cpu_features();
     const char* forced = std::getenv("QUIXICORE_CPU_INT8_GEMM_VARIANT");
     if (forced != nullptr) {
       for (const Variant& variant : kVariants) {
         if (std::strcmp(forced, variant.name) == 0 &&
             variant.supported(features)) {
-          return variant;
+          return &variant;
         }
       }
     }
@@ -54,9 +54,9 @@ const Variant& resolve() {
     for (const Variant& variant : kVariants) {
       if (variant.supported(features)) best = &variant;
     }
-    return *best;
+    return best;
   }();
-  return selected;
+  return *selected;
 }
 
 }  // namespace
@@ -83,9 +83,8 @@ Status int8_gemm(const std::int8_t* weights, const std::int8_t* x,
   // SIMD accumulators are signed 32-bit. Model dimensions are far below this
   // conservative exactness limit; retain the int64 scalar anchor above it.
   const Variant& variant = resolve();
-  const quant::Int8GemmFn kernel = k > 131000
-                                       ? &quant::int8_gemm_ref_kernel
-                                       : variant.fn;
+  const quant::Int8GemmFn kernel =
+      k > 131000 ? &quant::int8_gemm_ref_kernel : variant.fn;
   kernel(weights, x, weight_scale, activation_scale, weight_row_sum,
          activation_zero_point, y, m, n, k, asymmetric);
   return Status::kOk;

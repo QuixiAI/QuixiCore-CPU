@@ -36,14 +36,14 @@ constexpr Q8_0Variant kQ8_0Variants[] = {
 };
 
 const Q8_0Variant& resolve_q8_0() {
-  static const Q8_0Variant& chosen = []() -> const Q8_0Variant& {
+  static const Q8_0Variant* chosen = []() -> const Q8_0Variant* {
     const CpuFeatures& features = cpu_features();
     const char* forced = std::getenv("QUIXICORE_CPU_QGEMV_W8A8_VARIANT");
     if (forced != nullptr) {
       for (const auto& variant : kQ8_0Variants) {
         if (std::strcmp(variant.name, forced) == 0 &&
             variant.supported(features)) {
-          return variant;
+          return &variant;
         }
       }
     }
@@ -53,9 +53,9 @@ const Q8_0Variant& resolve_q8_0() {
         best = &variant;
       }
     }
-    return *best;
+    return best;
   }();
-  return chosen;
+  return *chosen;
 }
 
 struct Q4_0Variant {
@@ -74,14 +74,14 @@ constexpr Q4_0Variant kQ4_0Variants[] = {
 };
 
 const Q4_0Variant& resolve_q4_0() {
-  static const Q4_0Variant& chosen = []() -> const Q4_0Variant& {
+  static const Q4_0Variant* chosen = []() -> const Q4_0Variant* {
     const CpuFeatures& features = cpu_features();
     const char* forced = std::getenv("QUIXICORE_CPU_QGEMV_W8A8_VARIANT");
     if (forced != nullptr) {
       for (const auto& variant : kQ4_0Variants) {
         if (std::strcmp(variant.name, forced) == 0 &&
             variant.supported(features)) {
-          return variant;
+          return &variant;
         }
       }
     }
@@ -91,9 +91,9 @@ const Q4_0Variant& resolve_q4_0() {
         best = &variant;
       }
     }
-    return *best;
+    return best;
   }();
-  return chosen;
+  return *chosen;
 }
 
 Status validate(QuantFormat format, long long n, long long k) {

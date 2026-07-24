@@ -386,10 +386,10 @@ M/K/N tiling and reuse each prepared weight tile across multiple activation rows
 | A2 | FP8 online paged attention | E4M3 and E5M2 | Decode K/V in registers during online softmax; no full cache decode |
 | A3 | MXFP8 cache insert/gather | E4M3 plus E8M0 per group | Canonical scale layout and D64/D128 paths |
 | A4 | MXFP8 online paged attention | Same | Direct block-scaled score and V accumulation |
-| A5 | TurboQuant query transform | Signs plus normalized FWHT | Transform once per query/head and reuse across pages |
+| A5 | TurboQuant query transform | Signs plus normalized FWHT | Standalone typed transform seam; canonical cache keys remain untransformed |
 | A6 | TurboQuant packed-K score | 2-8 bit keys | Dot from packed codes, scale, and zero point without materialized K |
 | A7 | TurboQuant rotated-V accumulation | 2/3/4/8-bit centroid values | Accumulate in rotated domain through online softmax |
-| A8 | TurboQuant fused paged attention | Combined A5-A7 | One deferred inverse FWHT after final normalized V state |
+| A8 | TurboQuant fused paged attention | Packed K plus rotated V | One deferred inverse FWHT after final normalized V state |
 | A9 | BitNet a4.8 KV3 codec | 3-bit cache | Pack/unpack/scatter/gather with specified scale policy |
 | A10 | BitNet a4.8 KV3 attention | 3-bit cache | Direct packed score and V accumulation |
 
@@ -802,38 +802,327 @@ claims; matrix compute cells remain planned for M2 and later milestones.
 
 ### M2: universal projection
 
-- [ ] Every requested weight format has direct F32/F16/BF16 GEMV.
-- [ ] Every requested weight format has blocked M=16/128 GEMM.
-- [ ] W4A4, W4A8, W8A8, FP8, MXFP8, MXFP4, and NVFP4 dual modes pass.
-- [ ] GPTQ act-order performs no full activation permutation allocation.
-- [ ] Each kernel has three optimization-pass records.
+- [x] Every requested weight format has direct F32/F16/BF16 GEMV.
+- [x] Every requested weight format has blocked M=16/128 GEMM.
+- [x] W4A4, W4A8, W8A8, FP8, MXFP8, MXFP4, and NVFP4 dual modes pass.
+- [x] GPTQ act-order performs no full activation permutation allocation.
+- [x] Each kernel has three optimization-pass records.
+
+M2 evidence: importer-normalized INT4/U4, INT8, FP8 E4M3/E5M2,
+FP4, MXFP8, MXFP4, NVFP4, and BitNet tensors now execute directly from
+version-2 `CpuPackedWeights` row panels. `qgemm_prepacked_storage` consumes
+FP32/FP16/BF16 activations in the K loop, tiles M=16/128 without a dequantized
+weight matrix, and supports typed output conversion. The quantized-activation
+route covers the requested A4/A8/FP8/MX/NV combinations at M=1/16/128.
+GPTQ act-order is indexed directly and the focused test verifies no workspace
+allocation. `tests/correctness/test_quant_projection_matrix.cpp` checks all 11
+non-cache layouts; the current full Apple Release suite passes 55/55 tests.
+
+The shared K1-K15 framework has three optimization passes recorded in
+`perf/optimization_status.md`, with stable artifacts under
+`perf/results/2026-07-23/full-matrix-k1-k3-final2-t{1,6}/`. M>=16 is retained
+as a measured AArch64 NEON tier. K1 now also has three direct M=1 passes and
+checked final results for all 11 layouts under
+`perf/results/2026-07-23/canonical-gemv-final-all-t{1,6}/`; the comprehensive
+N4096 K4096 run is `canonical-gemv-comprehensive-all-t1`. The retained
+AArch64 FP32 block dots are 1.26x-6.30x over the same-run already-dequantized
+scalar matrix at that shape. Ten quantized-activation M=1 pairs now also have
+three direct packed optimization passes under
+`canonical-dual-gemv-pass{0,1-portable,2-neon-integer,3-neon-fp8}-t1` and a
+comprehensive N4096 K4096 final. Integer, FP4, NVFP4, and BitNet pairs beat the
+predecoded scalar baseline. The subsequent `canonical-dual-fp8-pass4-*`
+through `pass6-*` output-panel reuse sweep closes the M1 FP8 gap: E4M3/E4M3,
+E5M2/E4M3, and MXFP8 are 1.09x-1.16x over the scalar comparator at quick and
+1.27x-1.35x at comprehensive shapes. M16/128 dual-quant panels also have
+three measured passes under the `canonical-dual-gemm-pass*` artifacts; the
+retained activation/output-panel route reuses one
+packed activation decode across 16 output lanes and reaches 0.3911-3.6073 ms
+at M16. A second `canonical-dual-fp8-gemm-pass4-*` through `pass6-*` sweep
+extends reuse to eight panels per activation row and closes the checked
+multi-row FP8 gap: M16 FP8 pairs are 1.10x-1.25x over the scalar comparator
+and M128 E4M3 is 1.12x. Format-specialized FP16/BF16 M1 routes have three
+passes under the
+`canonical-typed-gemv-*` artifacts and match the FP32 tier. Typed M16/128 GEMM
+now also has three passes under `canonical-typed-gemm-pass*`; the retained
+four-panel-group route reuses a converted activation tile across output panels
+and is 1.16x-2.91x over its scalar-conversion pass 0. Native x86 M1 has three
+independent passes under `x86-canonical-pass*`: AVX2/F16C typed panel groups
+are 1.19x-2.34x over scalar-conversion pass 0, while the format-selected FP32
+E4M3/E5M2 panel route is 1.31x-1.32x faster. Native x86 M16/128 now has three
+further passes under `x86-m2-pass*` and final selected artifacts under
+`x86-m2-final-selected-t{1,16}`. AVX2/FMA M tiles and four-panel activation
+reuse are 1.58x-3.69x over the native pass-1 weight-only routes; direct
+dual-code dots are 1.00x-4.49x, with measured-regressing W8A8 explicitly
+retained on the portable panel path. This closes the per-kernel three-pass
+item for M2. Applicable AVX-512/VNNI routes are measured separately in M5;
+there is no AMX projection route or claim.
 
 ### M3: fused model path
 
-- [ ] Bias/activation epilogues cover the matrix.
-- [ ] Gate/up/SwiGLU paths cover the matrix.
-- [ ] QKV/RoPE/KV-write paths cover the matrix.
-- [ ] Norm-add-quant covers A4/A8/FP8/MX/NV.
-- [ ] Embedding, LM head, and applicable MoE paths cover the matrix.
+- [x] Bias/activation epilogues cover the weight-only projection matrix.
+- [x] Gate/up paired projection covers the weight-only matrix.
+- [x] Gate/up/SwiGLU plus activation quantization covers the dual matrix.
+- [x] QKV/RoPE/KV-write paths cover the matrix for floating cache storage.
+- [x] Norm-add-quant covers A4/A8/FP8/MX/NV.
+- [x] Embedding and embedding-bag paths cover the stored-weight matrix.
+- [x] LM-head selection paths cover the stored-weight matrix.
+- [x] Applicable MoE paths cover the matrix.
+
+M3 F1 evidence: `qgemm_prepacked_epilogue_storage` now applies optional
+channel bias and none/GELU-erf/GELU-tanh/SiLU/ReLU2 directly to each FP32
+accumulator before FP32/FP16/BF16 output storage. All 11 non-cache canonical
+weight layouts and FP32/FP16/BF16 activation storage share the M2 prepared
+panel routes; no complete dequantized weight or FP32 output tensor is
+materialized. `test_quant_projection_matrix` covers every layout, activation,
+and output storage at M=1/16/128. Three measured passes plus retained Apple and
+native x86 results are recorded under `f1-fused-epilogue-*`; the stable x86
+route is throughput-neutral versus a stronger preallocated composition, so F1
+is a materialization/semantic closure rather than a performance-tier claim.
+
+M3 F2 evidence: `qgemm_prepacked_gate_up_storage` accepts independently
+prepared gate/up planes for all 11 non-cache canonical layouts, shares one CPU
+schedule and the multi-row activation traversal, and writes FP32/FP16/BF16
+outputs without a combined-weight or intermediate allocation. Correctness
+covers every layout, M=1/16/128, and all three activation/output storage types.
+Three primary passes plus an x86 locality-selection follow-up are recorded
+under `f2-gate-up-*`; stable one-thread EPYC M16/128 results are
+1.04x-1.17x over two prepared projection calls. This completes F2.
+
+M3 F3 evidence: `qgemm_prepacked_swiglu_storage` eliminates both gate/up
+outputs and the post-projection activation pass while preserving direct
+FP32/FP16/BF16 stores. `qgemm_prepacked_swiglu_quantized` goes on to emit
+canonical symmetric/affine INT4 and INT8, FP4, FP8 E4M3/E5M2, MXFP4, MXFP8,
+or NVFP4 bytes and scales from bounded per-worker groups; no complete M-by-N
+floating-point SwiGLU tensor is allocated. Reused output vectors and the
+caller/thread workspace make the warmed path allocation-free. Correctness
+crosses every one of the 11 prepared weight layouts, M=1/16/128, all three
+input storage types, row/group/tensor scale modes, and NVFP4 1-D/2-D scales.
+Three primary passes for both the typed-store and activation-quantized kernels,
+plus measured native-x86 locality selection, are recorded under `f3-swiglu-*`
+and `f3-quant-*`. Apple group-A8 cases are 0.975x-2.188x versus fused typed
+SwiGLU plus standalone quantization; the stable EPYC range is
+0.892x-1.052x, so F3 completion is a semantic/materialization claim rather
+than a blanket cross-architecture speedup.
+
+M3 F4 evidence: `qgemm_prepacked_qkv_storage` accepts independently prepared
+Q, K, and V matrices with unequal output rows, direct FP32/FP16/BF16 inputs
+and mixed outputs, and one CPU scheduling region. Selected multi-row routes
+share activation tiles across active Q/K/V panels; measured-regressing typed
+or highly threaded shapes stay on their mature panel groups. Correctness
+crosses all 11 weight layouts, M=1/16/128, every input storage type, exact
+typed output rounding, unequal heads, wrapper behavior, and failure-atomic
+validation against three independent projection oracles. Three primary passes
+and native-x86 selector follow-ups are recorded under `f4-qkv-*`. Stable
+one-thread M128 FP32 ratios are 1.04x-1.08x on Apple and 1.03x-1.11x on EPYC
+versus three public prepared calls. This completed F4 QKV projection; the
+combined QKV/RoPE/KV-write item was kept open until the F5 evidence below.
+
+M3 F5 evidence: `qgemv_prepacked_qkv_rope_kv_storage` projects all 11
+canonical weight layouts from FP32/FP16/BF16 activation storage, applies
+split-half RoPE, writes direct FP32/FP16/BF16 Q output, and inserts K/V into
+independently typed ordinary floating caches without separate raw Q/K/V
+buffers. `slot=-1` skips cache projection and preserves cache bytes.
+Correctness uses independent projection and RoPE/cache oracles across every
+layout and exact mixed typed-store boundaries. Three primary passes and
+architecture-locality follow-ups are recorded under `f5-qkv-rope-*`; rejected
+generic panel experiments remain visible. Native x86 typed cases are
+1.095x-1.148x over the composed one-thread comparator, while the full Apple
+and x86 matrix is treated as materialization closure rather than a blanket
+speedup. This closes the M3 QKV/RoPE/KV-write item for FP32/FP16/BF16 caches;
+FP8, MXFP8, TurboQuant, and BitNet compressed caches are closed under M4 below.
+
+M3 F6/F7 evidence: `rms_norm_add_quantized_storage` and
+`layer_norm_add_quantized_storage` accept independent FP32/FP16/BF16 storage
+for residual inputs, parameters, and residual output, then directly pack
+canonical symmetric/affine INT4 or INT8, FP4, FP8 E4M3/E5M2, MXFP4, MXFP8,
+or NVFP4 activations. Only per-row statistics and bounded worker scratch are
+retained; no rows-by-hidden normalized tensor is allocated. Correctness
+crosses both norm types, every output layout, 1-D/2-D and partial NV domains,
+and homogeneous plus mixed storage. Three measured Apple passes retain direct
+F32 traversal and full-row reuse. The final threaded matrix is 1.41x-5.71x
+over preallocated composition on Apple and 1.77x-6.52x on native EPYC; the
+one-thread MX/NV tails are reported as neutral/regressive rather than a
+blanket speedup. This closes F6/F7 and the M3 norm-add-quant checklist item.
+
+M3 S1/S2 evidence: `canonical_quantized_embedding_storage` and
+`canonical_quantized_embedding_bag_storage` decode only selected rows from
+all 11 canonical stored-weight layouts. Gather supports optional independently
+typed add input and FP32/FP16/BF16 output; bag supports sum, mean, and weighted
+reduction with bounded per-worker row scratch. Correctness compares against an
+independently dequantized full-table oracle, checks exact typed storage
+boundaries, and verifies invalid IDs are failure-atomic on Apple and native
+x86-64. Three measured passes retain direct FP32 stores and item-major bag
+accumulation. Final Apple one-thread ratios versus full-table dequantization
+then selection are 2.57x-25.69x and native EPYC ratios are 1.84x-31.09x;
+threaded results are also recorded. These ratios quantify the removed table
+materialization and are not presented as equal-work projection speedups. This
+closes S1/S2; quantized MoE is handled by S5-S7 below.
+
+M3 S3/S4 evidence: `qgemm_prepacked_lm_head_sample_storage`,
+`qgemm_prepacked_lm_head_masked_topk_storage`,
+`qgemm_prepacked_lm_head_candidates_storage`, and
+`qgemm_prepacked_lm_head_beam_advance_storage` operate on every prepared
+canonical weight layout with FP32/FP16/BF16 hidden storage. Argmax, top-k,
+packed-mask, candidate, and beam routes retain only deterministic selection
+partials and online log-sum-exp state; exact categorical/top-p sampling uses
+one vocabulary row because the final nucleus is data-dependent, never a
+rows-by-vocabulary tensor. The algorithms adapt the two-stage partial/reduce
+scheme in QuixiCore-Metal revision `bc968fc` to CPU row panels, cache tiles,
+and the persistent thread pool. Correctness covers all 11 layouts, all input
+storage types, exact seeded top-k/top-p selection, structured log
+probabilities, beam parents/scores, strict candidate validation, and
+failure-atomic outputs on Apple and native x86-64. Three primary passes retain
+format-selected direct-row versus multi-row panel traversal; follow-ups add
+threaded vocabulary partials and x86 multi-row panel reuse. Apple one-thread
+top-k is 1.14x-2.96x and structured routes reach 3.37x-130.40x versus
+materialized composition. Native EPYC one-thread multi-row paths range
+0.95x-12.49x; 16-thread top-k reaches 2.04x-3.85x for three of four formats,
+with all neutral/regressive cases preserved in the evidence. This closes
+S3/S4 without making a blanket throughput claim.
+
+M3 S5/S6/S7 evidence: `moe_grouped_prepacked_storage` and
+`moe_grouped_prepacked_swiglu_storage` accept expert-indexed arrays of every
+prepared canonical stored-weight layout with direct FP32/FP16/BF16 activation
+and output storage. Sorted expert runs avoid permutation scratch; unsorted
+runs use stable workspace grouping and typed gather/scatter; `-1` padded rows
+store zero. The fused route directly stores `SiLU(gate)*up` without a
+rows-by-2I tensor. Named FP8, WNA16, and NVFP4 wrappers validate metadata once
+and reuse the same implementation. Correctness crosses all 11 layouts, all
+three storage types, sorted/unsorted/all-padded routing, wrappers, and
+failure-atomic invalid IDs on Apple and native x86-64. Three passes retain an
+Apple one-thread compact-row selector, grouped FP8, and one shared threaded
+dispatch across sorted experts. Final 16-thread ratios versus per-token
+prepared GEMVs are 3.18x-8.72x on Apple and 3.56x-8.30x on EPYC. This closes
+the stored-weight/A16 slices and their named adapters.
+
+`moe_grouped_prepacked_quantized` adds canonical W4A8, W8A8, FP4/FP8,
+MXFP4/MXFP8, NVFP4, and BitNet-A8 activation packets. Direct block-pair dots
+are retained where measured; multi-row x86 routes decode the activation once
+into reusable workspace before invoking the optimized grouped panels.
+`moe_grouped_prepacked_swiglu_quantized` projects gate/up and directly packs
+all ten supported non-BitNet activation layouts from bounded worker/domain
+scratch, including tensor scales and NVFP4 1-D/2-D domains. Sorted FP8 expert
+runs reuse decoded panels and share one dispatch. Correctness covers every
+weight layout, every output packet, FP32/FP16/BF16 input, unsorted and padded
+rows, and a sorted threaded panel route on Apple and native x86-64. Three
+passes for each new kernel, retained and rejected selectors, and one-/16-thread
+measurements are recorded under `s5-moe-dual-*`,
+`s6-moe-swiglu-quant-*`, and `x86-s5-s6-moe-*`. Regressive cases remain in
+the notebook, so this is matrix and materialization closure rather than a
+blanket performance-tier claim. S5-S7 and the aggregate M3 MoE item are now
+complete.
+
+Metal BaseQN drift closure: `base_q_dequant`, `base_q_gemv`, `base_q_gemm`,
+`base_q_embedding`, `base_q_gemv_qkv`, `base_q_gemv_swiglu`, and
+`base_q_lm_head_argmax`, `base_q_moe_gemm`, and `base_q_moe_swiglu` cover the
+canonical BaseQ2/3/4/5/6/8 sibling contract, including every legal group,
+scale, symmetry, and FP32/FP16/BF16 storage combination. LM-head scores are
+rounded to the activation storage type before selection and ties choose the
+lower token, matching Metal. Grouped expert projection consumes the existing
+32-row padded schedule, and the fused gate/up row axis is
+`[gate(intermediate), up(intermediate)]`. Three direct projection, LM-head,
+and grouped-MoE optimization passes, retained Apple and native x86
+measurements, and the complete correctness matrix are recorded under
+`base-q-*`. This adds the newly discovered sibling family without broadening
+the F3 output-format claim to BitNet Q9 sparse activation preparation.
 
 ### M4: compressed-cache path
 
-- [ ] FP8 E4M3/E5M2 direct paged attention is complete.
-- [ ] MXFP8 direct paged attention is complete.
-- [ ] TurboQuant compressed attention is complete.
-- [ ] BitNet a4.8 KV3 codec and attention are complete.
+- [x] FP8 E4M3/E5M2 direct paged attention is complete.
+- [x] MXFP8 direct paged attention is complete.
+- [x] TurboQuant compressed attention is complete.
+- [x] BitNet a4.8 KV3 codec and attention are complete.
+
+M4 FP8 evidence: canonical E4M3FN/E5M2 cache insert and gather now accept
+FP32, FP16, or BF16 storage, with per-head static scales or contract-correct
+dynamic scales (`amax/448` and `amax/57344`). The direct paged kernel decodes
+K/V bytes inside online softmax, hoists K/V scales out of the element loops,
+and supports all three query/output storage types at D64/D128. The focused
+correctness matrix crosses both formats, both dimensions, and all 3x3 typed
+input/output boundaries. Three measured attention and cache-I/O passes plus
+Apple AArch64 and native EPYC results are recorded under `m4-fp8-*` and
+`x86-m4-fp8-*`; direct attention is 1.22x-1.78x over cache materialization on
+Apple at one thread and 3.83x-5.09x on EPYC. Typed cache I/O has mixed
+architecture results, which are retained without a blanket speedup claim.
+
+M4 MXFP8 evidence: cache rows use the canonical interleaved 33-byte block
+(`E8M0 scale + 32 E4M3FN codes`) for every D64/D128 head group. Scatter and
+gather accept FP32/FP16/BF16 storage, and direct paged attention consumes block
+scales and codes inside online softmax. Correctness crosses both dimensions and
+all typed boundaries. Three optimization passes replace scalar bit decoding
+with lookup tables, hoist block scales, and schedule collision-safe cache
+blocks. Direct attention is 1.95x-2.10x over materialization on Apple at one
+thread and 1.53x-1.57x on EPYC; threaded results and all artifacts are indexed
+in `perf/optimization_status.md`. This closes A3/A4 only.
+
+M4 TurboQuant evidence: the canonical 2-8-bit packed-key codec, centroid-coded
+signed-FWHT value cache, FP16-rounded group metadata, and D64/D128/D256 heads
+now have FP32/FP16/BF16 codec adapters. Direct online attention computes K
+scores from packed codes and accumulates V in its rotated domain, performing
+one inverse FWHT only after softmax normalization. The standalone normalized
+signed-FWHT query transform is exposed for the A5 seam; it is intentionally
+not applied to canonical cache attention because the contract stores K
+untransformed. Correctness covers every 2-8-bit diagonal pair, signed K8,
+D64/D128/D256, the complete typed codec and 3x3 attention boundaries, and an
+explicit materialized-cache oracle on Apple and native x86-64. Three passes
+replace generic bit addressing with 2/4/8-bit extractors, hoist 32-value group
+metadata, remove per-head heap scratch, and add collision-safe codec
+scheduling. Retained direct attention is 1.29x-1.54x / 3.00x-3.28x over
+materialization on Apple and 1.36x-2.12x / 6.28x-7.99x on EPYC at one/16
+threads. Typed codec staging ratios remain mixed and are not generalized.
+Artifacts are indexed in `perf/optimization_status.md`. This closes A5-A8
+only.
+
+M4 BitNet a4.8 KV3 evidence: cache heads are a canonical low-bit-first 3-bit
+stream with a declared group size, explicit signed/unsigned interpretation,
+explicit no-zero/integer-zero-point mode, and FP16 or FP32 group scales.
+Scatter, gather, and direct online paged attention support D64/D128/D256 and
+FP32/FP16/BF16 boundaries. Correctness independently unpacks every code and
+crosses signed symmetric, unsigned nonnegative, unsigned affine, signed
+affine, both scale encodings, multiple group sizes, the complete typed codec
+matrix, and all 3x3 query/output pairs on Apple and native x86-64. Three
+primary passes establish scalar semantics, adopt 8-code/3-byte packet
+addressing with group metadata hoisting, and add collision-safe cache/query
+scheduling; a retained follow-up reuses each loaded packet across all eight
+codes. Apple one-thread direct attention is 0.87x-0.97x materialization and is
+therefore not claimed as faster; at 16 threads it is 2.14x-3.02x. EPYC is
+0.46x-0.48x at one thread and 1.74x-2.08x at 16 threads. Threaded codec I/O is
+1.14x-1.24x on Apple and 1.04x-1.33x on EPYC. Artifacts and regressions are
+recorded in `perf/optimization_status.md`. This closes A9/A10 and M4 without a
+blanket single-thread performance claim.
 
 ### M5: architecture and publication closure
 
-- [ ] Portable fallback passes all tests.
-- [ ] AArch64 NEON plus applicable DotProd/I8MM routes pass and are benchmarked.
-- [ ] x86-64 AVX2 plus applicable AVX-512/VNNI routes pass and are benchmarked.
-- [ ] Optional SVE/SME/AMX routes are claimed only where hardware evidence exists.
-- [ ] Release, sanitizer, and cross-architecture suites pass.
-- [ ] `perf/optimization_status.md` contains three passes per kernel family.
-- [ ] `perf/baseline_status.md` indexes accepted finals.
-- [ ] `docs/sibling-port-matrix.md` and parity manifests match the evidence.
-- [ ] Umbrella matrices are updated through a separate contract-repository change.
+- [x] Portable fallback passes all tests.
+- [x] AArch64 NEON plus applicable DotProd/I8MM routes pass and are benchmarked.
+- [x] x86-64 AVX2 plus applicable AVX-512/VNNI routes pass and are benchmarked.
+- [x] No optional SVE/SME/AMX kernel tier is claimed without an implemented,
+  correctness-tested, and benchmarked route.
+- [x] Release, sanitizer, and cross-architecture suites pass.
+- [x] `perf/optimization_status.md` contains three passes per kernel family.
+- [x] `perf/baseline_status.md` indexes accepted finals.
+- [x] `docs/sibling-port-matrix.md` and parity manifests match the evidence.
+- [x] Umbrella CPU registry and matrices match the backend evidence.
+
+M5 evidence: Apple AArch64 Release passes 55/55 tests, including the live
+sibling drift gate and the enforced 110-operation sibling inventory. Intel
+Sapphire Rapids Release passes all 57 locally executable tests; parity is
+checked on the Apple workspace because the isolated x86 checkout does not
+contain sibling repositories. Eight forced-route tests prove exact GGUF
+AVX2/AVX-512, W8A32 AVX2/AVX-512, INT8 AVX2/AVX-512-VNNI, and W4A8
+AVX2/AVX-512-VNNI execution. Three focused passes retain AVX-512 for W8A32,
+VNNI for INT8/W4A8, and AVX2 for automatic GGUF dispatch after the generic
+AVX-512 candidate trailed on 19 of 23 formats. The prior AMD EPYC 7702 native
+and portable-only Release suites pass 46/46, and its
+ASan/UBSan/float-cast-overflow suite passes 45/45 with leak detection.
+Sapphire Rapids runtime detection exposes AMX tile/int8/bf16, but no AMX
+source or dispatch route exists, so no AMX kernel or performance tier is
+claimed. No SVE or SME tier is claimed either. Three-pass artifacts for
+M0-M4, later sibling semantic ports, and the advanced x86 routes are indexed
+in both performance status documents. The separate umbrella working tree now
+registers CPU as active, declares portable scalar execution as its minimum,
+and marks all 16 contract families complete with an explicit semantic-versus-
+optimized-tier qualification.
 
 ## Per-package handoff template
 

@@ -1,5 +1,3 @@
-#include "quixicore_cpu/float_storage.h"
-
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
@@ -12,6 +10,7 @@
 #include "kernels/common/fp16.h"
 #include "kernels/utils/float_storage_isa.h"
 #include "quixicore_cpu/cpu_features.h"
+#include "quixicore_cpu/float_storage.h"
 #include "quixicore_cpu/ops.h"
 #include "quixicore_cpu/qgemm.h"
 #include "quixicore_cpu/qgemv.h"
@@ -90,10 +89,9 @@ bool overlaps(const Region& a, const Region& b) {
 
 template <class Fn>
 void parallel_convert(long long count, Fn&& fn) {
-  threading::parallel_ranges(count, kParallelElements,
-                             [&](long long begin, long long end, int) {
-                               fn(begin, end);
-                             });
+  threading::parallel_ranges(
+      count, kParallelElements,
+      [&](long long begin, long long end, int) { fn(begin, end); });
 }
 
 struct Group {
@@ -147,11 +145,10 @@ struct AttentionContext {
   long long hq, hkv, sq, sk, dim;
   bool causal;
 };
-Status call_attention(const float* const* in, float* const* out,
-                      void* opaque) {
+Status call_attention(const float* const* in, float* const* out, void* opaque) {
   const auto& ctx = *static_cast<AttentionContext*>(opaque);
-  return attention(in[0], in[1], in[2], out[0], ctx.hq, ctx.hkv, ctx.sq,
-                   ctx.sk, ctx.dim, ctx.causal);
+  return attention(in[0], in[1], in[2], out[0], ctx.hq, ctx.hkv, ctx.sq, ctx.sk,
+                   ctx.dim, ctx.causal);
 }
 
 struct QGemmContext {
@@ -187,8 +184,7 @@ float f16_to_float(std::uint16_t bits) noexcept { return fp16_to_fp32(bits); }
 std::uint16_t float_to_bf16(float value) noexcept {
   std::uint32_t bits;
   std::memcpy(&bits, &value, sizeof bits);
-  if ((bits & 0x7f800000u) == 0x7f800000u &&
-      (bits & 0x007fffffu) != 0) {
+  if ((bits & 0x7f800000u) == 0x7f800000u && (bits & 0x007fffffu) != 0) {
     // Keep NaNs as NaNs even when all payload bits live below bit 16.
     return static_cast<std::uint16_t>((bits >> 16) | 0x0040u);
   }
@@ -243,6 +239,12 @@ Status float_storage_to_f32(FloatStorageType type, const void* input,
     });
   } else {
     parallel_convert(count, [&](long long begin, long long end) {
+#if defined(QUIXICORE_CPU_HAVE_FLOAT_STORAGE_AVX2)
+      if (cpu_features().avx2) {
+        float_storage_detail::bf16_to_f32_avx2(src, output, begin, end);
+        return;
+      }
+#endif
       for (long long i = begin; i < end; ++i) output[i] = bf16_to_float(src[i]);
     });
   }
@@ -303,6 +305,11 @@ const char* float_storage_variant(FloatStorageType type) noexcept {
 #endif
 #if defined(QUIXICORE_CPU_HAVE_FLOAT_STORAGE_F16C)
     if (cpu_features().f16c) return "f16c";
+#endif
+  }
+  if (type == FloatStorageType::kBF16) {
+#if defined(QUIXICORE_CPU_HAVE_FLOAT_STORAGE_AVX2)
+    if (cpu_features().avx2) return "avx2";
 #endif
   }
   return "parallel_f32";
@@ -373,15 +380,15 @@ Status dispatch_float_storage(const FloatStorageInput* inputs,
 
   try {
     for (long long i = 0; i < input_count; ++i) {
-      const Status status = add_region(inputs[i].data, inputs[i].type,
-                                       inputs[i].count, true,
-                                       &input_group[static_cast<std::size_t>(i)]);
+      const Status status =
+          add_region(inputs[i].data, inputs[i].type, inputs[i].count, true,
+                     &input_group[static_cast<std::size_t>(i)]);
       if (status != Status::kOk) return status;
     }
     for (long long i = 0; i < output_count; ++i) {
-      const Status status = add_region(outputs[i].data, outputs[i].type,
-                                       outputs[i].count, false,
-                                       &output_group[static_cast<std::size_t>(i)]);
+      const Status status =
+          add_region(outputs[i].data, outputs[i].type, outputs[i].count, false,
+                     &output_group[static_cast<std::size_t>(i)]);
       if (status != Status::kOk) return status;
     }
   } catch (const std::bad_alloc&) {
@@ -456,9 +463,8 @@ Status dispatch_float_storage(const FloatStorageInput* inputs,
       f32_inputs[static_cast<std::size_t>(i)] =
           group.region.type == FloatStorageType::kF32
               ? static_cast<const float*>(inputs[i].data)
-              : group.region.count == 0
-                    ? nullptr
-                    : arena.scratch_.data() + group.offset;
+          : group.region.count == 0 ? nullptr
+                                    : arena.scratch_.data() + group.offset;
     }
     for (long long i = 0; i < output_count; ++i) {
       const auto& group = groups[static_cast<std::size_t>(
@@ -466,9 +472,8 @@ Status dispatch_float_storage(const FloatStorageInput* inputs,
       f32_outputs[static_cast<std::size_t>(i)] =
           group.region.type == FloatStorageType::kF32
               ? static_cast<float*>(outputs[i].data)
-              : group.region.count == 0
-                    ? nullptr
-                    : arena.scratch_.data() + group.offset;
+          : group.region.count == 0 ? nullptr
+                                    : arena.scratch_.data() + group.offset;
     }
   } catch (const std::bad_alloc&) {
     return Status::kOutOfMemory;
@@ -510,10 +515,10 @@ Status softmax_storage(FloatStorageInput x, FloatStorageOutput y,
 }
 
 Status rms_norm_storage(FloatStorageInput x, FloatStorageInput weight,
-                        FloatStorageOutput y, long long rows,
-                        long long hidden, float eps) {
-  if (!matches_product(x.count, {rows, hidden}) ||
-      weight.count != hidden || y.count != x.count) {
+                        FloatStorageOutput y, long long rows, long long hidden,
+                        float eps) {
+  if (!matches_product(x.count, {rows, hidden}) || weight.count != hidden ||
+      y.count != x.count) {
     return Status::kInvalidShape;
   }
   const FloatStorageInput inputs[] = {x, weight};
@@ -524,8 +529,7 @@ Status rms_norm_storage(FloatStorageInput x, FloatStorageInput weight,
 Status dense_gemm_storage(FloatStorageInput a, FloatStorageInput b,
                           FloatStorageOutput c, long long m, long long n,
                           long long k) {
-  if (!matches_product(a.count, {m, k}) ||
-      !matches_product(b.count, {k, n}) ||
+  if (!matches_product(a.count, {m, k}) || !matches_product(b.count, {k, n}) ||
       !matches_product(c.count, {m, n})) {
     return Status::kInvalidShape;
   }
@@ -545,8 +549,8 @@ Status attention_storage(FloatStorageInput q, FloatStorageInput k,
     return Status::kInvalidShape;
   }
   const FloatStorageInput inputs[] = {q, k, v};
-  AttentionContext ctx{query_heads, kv_heads, query_length, kv_length,
-                       head_dim, causal};
+  AttentionContext ctx{query_heads, kv_heads, query_length,
+                       kv_length,   head_dim, causal};
   return dispatch_float_storage(inputs, 3, &out, 1, call_attention, &ctx);
 }
 
@@ -563,8 +567,8 @@ Status qgemv_storage(QuantFormat format, const void* packed,
 Status qgemm_storage(QuantFormat format, const void* packed,
                      FloatStorageInput x, FloatStorageOutput y, long long m,
                      long long n, long long k) {
-  if (!matches_product(x.count, {m, k}) ||
-      !matches_product(y.count, {m, n}) || n <= 0) {
+  if (!matches_product(x.count, {m, k}) || !matches_product(y.count, {m, n}) ||
+      n <= 0) {
     return Status::kInvalidShape;
   }
   QGemmContext ctx{format, packed, m, n, k};

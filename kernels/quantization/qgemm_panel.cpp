@@ -1,9 +1,9 @@
-#include "quixicore_cpu/qgemm.h"
-
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+
+#include "quixicore_cpu/qgemm.h"
 
 #if defined(__aarch64__) || defined(_M_ARM64)
 #include <arm_neon.h>
@@ -27,9 +27,8 @@ void accumulate_rows(float* sums, const float* values, float weight,
 #if defined(__aarch64__) || defined(_M_ARM64)
   const float32x4_t broadcast = vdupq_n_f32(weight);
   for (; row + 3 < rows; row += 4) {
-    vst1q_f32(sums + row,
-              vfmaq_f32(vld1q_f32(sums + row), broadcast,
-                        vld1q_f32(values + row)));
+    vst1q_f32(sums + row, vfmaq_f32(vld1q_f32(sums + row), broadcast,
+                                    vld1q_f32(values + row)));
   }
 #endif
   for (; row < rows; ++row) sums[row] += weight * values[row];
@@ -216,11 +215,13 @@ Status qgemm_prepacked(const CpuPackedWeights& weights, const float* x,
                        float* y, long long m, Workspace* workspace) {
   if (!weights.ready()) return Status::kInvalidArgument;
   const CpuPackedWeightsInfo info = weights.info();
-  // Canonical lifecycle panels are prepared for later format-specialized M2
-  // consumers. Never reinterpret them through the legacy GGUF QuantFormat.
-  if (info.has_canonical_layout) return Status::kUnsupportedFormat;
   if (!detail::valid_product({m, info.rows, info.columns})) {
     return Status::kInvalidShape;
+  }
+  if (info.has_canonical_layout) {
+    return qgemm_prepacked_storage(
+        weights, {x, FloatStorageType::kF32, m * info.columns},
+        {y, FloatStorageType::kF32, m * info.rows}, m, workspace);
   }
   if (!detail::all_nonnull(x, y, weights.contract_data(),
                            weights.panel_data())) {
@@ -230,10 +231,10 @@ Status qgemm_prepacked(const CpuPackedWeights& weights, const float* x,
     return qgemv(info.format, weights.contract_data(), x, y, info.rows,
                  info.columns);
   }
-  if (m < 64 && (info.format == QuantFormat::kQ4_0 ||
-                 info.format == QuantFormat::kQ8_0 ||
-                 info.format == QuantFormat::kIQ4_NL ||
-                 info.format == QuantFormat::kIQ4_XS)) {
+  if (m < 64 &&
+      (info.format == QuantFormat::kQ4_0 || info.format == QuantFormat::kQ8_0 ||
+       info.format == QuantFormat::kIQ4_NL ||
+       info.format == QuantFormat::kIQ4_XS)) {
     return qgemm(info.format, weights.contract_data(), x, y, m, info.rows,
                  info.columns);
   }
@@ -249,8 +250,8 @@ Status qgemm_prepacked(const CpuPackedWeights& weights, const float* x,
                    static_cast<std::size_t>(m), &tile_elements) ||
       !checked_mul(tile_elements, 2 * static_cast<std::size_t>(num_threads()),
                    &worker_elements) ||
-      worker_elements > std::numeric_limits<std::size_t>::max() -
-                            transposed_elements) {
+      worker_elements >
+          std::numeric_limits<std::size_t>::max() - transposed_elements) {
     return Status::kInvalidShape;
   }
   total_elements = transposed_elements + worker_elements;

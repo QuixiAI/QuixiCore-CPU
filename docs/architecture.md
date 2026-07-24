@@ -45,6 +45,13 @@ compilations never break. macOS universal binaries should be built as two
 single-arch builds combined with `lipo`; per-file ISA flags cannot be applied
 per-slice in a single fat build.
 
+Configure with `-DQUIXICORE_CPU_ENABLE_ISA_VARIANTS=OFF` to build a true
+portable-fallback binary. In that mode no optional ISA source is added and all
+`QUIXICORE_CPU_ISA_*_SUPPORTED` cache entries are forced false, including when
+the build directory was previously configured with variants enabled. This is
+the release-validation route for proving that reference dispatch does not
+accidentally depend on a host ISA object.
+
 ## Runtime Feature Detection
 
 `src/runtime/` answers "what can this CPU execute?" once per process, cached:

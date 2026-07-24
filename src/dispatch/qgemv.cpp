@@ -5,7 +5,6 @@
 // activation-quantizing experiments are not members of this dispatch table.
 
 #include "quixicore_cpu/qgemv.h"
-#include "quixicore_cpu/quantization.h"
 
 #include <climits>
 #include <cmath>
@@ -18,11 +17,12 @@
 #include <vector>
 
 #include "kernels/quantization/activation_quant.h"
-#include "kernels/quantization/qgemv.h"
-#include "kernels/quantization/qgemv_w8a8.h"
 #include "kernels/quantization/gguf_pack_ref.h"
 #include "kernels/quantization/gguf_ref.h"
+#include "kernels/quantization/qgemv.h"
+#include "kernels/quantization/qgemv_w8a8.h"
 #include "quixicore_cpu/cpu_features.h"
+#include "quixicore_cpu/quantization.h"
 
 namespace quixicore_cpu {
 namespace {
@@ -37,24 +37,32 @@ struct GgufVariant {
   const char* name;
   quant::GgufGemvFn fn;
   bool (*supported)(const CpuFeatures&);
+  bool automatic;
 };
 
 constexpr GgufVariant kGgufVariants[] = {
-    {"ref", &quant::gguf_gemv_ref,
-     [](const CpuFeatures&) { return true; }},
+    {"ref", &quant::gguf_gemv_ref, [](const CpuFeatures&) { return true; },
+     true},
+    // Retain the whole-block decode experiment for explicit A/B checks, but
+    // do not select it automatically: it is architecture- and format-sensitive
+    // and can be substantially slower than element decoding.
     {"blocked_ref", &quant::gguf_gemv_blocked_ref,
-     [](const CpuFeatures&) { return true; }},
+     [](const CpuFeatures&) { return true; }, false},
 #if defined(__aarch64__) || defined(_M_ARM64)
     {"neon", &quant::gguf_gemv_neon,
-     [](const CpuFeatures& features) { return features.neon; }},
+     [](const CpuFeatures& features) { return features.neon; }, true},
 #endif
 #if defined(QUIXICORE_CPU_HAVE_GGUF_GEMV_AVX2)
     {"avx2", &quant::gguf_gemv_avx2,
-     [](const CpuFeatures& features) { return features.avx2; }},
+     [](const CpuFeatures& features) { return features.avx2; }, true},
 #endif
 #if defined(QUIXICORE_CPU_HAVE_GGUF_GEMV_AVX512)
+    // Keep the generic decoded AVX-512 experiment forceable for correctness
+    // and A/B work. On Sapphire Rapids it loses to the direct AVX2 block-dot
+    // route for most formats; promote it only after dedicated AVX-512 block
+    // decoders demonstrate a measured win.
     {"avx512", &quant::gguf_gemv_avx512,
-     [](const CpuFeatures& features) { return features.avx512f; }},
+     [](const CpuFeatures& features) { return features.avx512f; }, false},
 #endif
 };
 
@@ -67,14 +75,14 @@ constexpr Q8_0Variant kQ8_0Variants[] = {
 };
 
 const Q8_0Variant& resolve_q8_0() {
-  static const Q8_0Variant& chosen = []() -> const Q8_0Variant& {
+  static const Q8_0Variant* chosen = []() -> const Q8_0Variant* {
     const CpuFeatures& features = cpu_features();
     const char* forced = std::getenv("QUIXICORE_CPU_QGEMV_VARIANT");
     if (forced != nullptr) {
       for (const auto& variant : kQ8_0Variants) {
         if (std::strcmp(variant.name, forced) == 0 &&
             variant.supported(features)) {
-          return variant;
+          return &variant;
         }
       }
     }
@@ -84,30 +92,30 @@ const Q8_0Variant& resolve_q8_0() {
         best = &variant;
       }
     }
-    return *best;
+    return best;
   }();
-  return chosen;
+  return *chosen;
 }
 
 const GgufVariant& resolve_gguf() {
-  static const GgufVariant& chosen = []() -> const GgufVariant& {
+  static const GgufVariant* chosen = []() -> const GgufVariant* {
     const CpuFeatures& features = cpu_features();
     const char* forced = std::getenv("QUIXICORE_CPU_GGUF_GEMV_VARIANT");
     if (forced != nullptr) {
       for (const auto& variant : kGgufVariants) {
         if (std::strcmp(variant.name, forced) == 0 &&
             variant.supported(features)) {
-          return variant;
+          return &variant;
         }
       }
     }
     const GgufVariant* best = &kGgufVariants[0];
     for (const auto& variant : kGgufVariants) {
-      if (variant.supported(features)) best = &variant;
+      if (variant.automatic && variant.supported(features)) best = &variant;
     }
-    return *best;
+    return best;
   }();
-  return chosen;
+  return *chosen;
 }
 
 Status validate(QuantFormat format, long long n, long long k) {
@@ -136,16 +144,15 @@ bool checked_mul(size_t a, size_t b, size_t* out) {
   return true;
 }
 
-Status packed_size(QuantFormat format, long long n, long long k,
-                   size_t* size) {
+Status packed_size(QuantFormat format, long long n, long long k, size_t* size) {
   long long block_size = 0;
   size_t block_bytes = 0;
   if (!quant::gguf_format_info(format, &block_size, &block_bytes)) {
     return Status::kUnsupportedFormat;
   }
   size_t blocks = 0;
-  if (!checked_mul(static_cast<size_t>(n),
-                   static_cast<size_t>(k / block_size), &blocks) ||
+  if (!checked_mul(static_cast<size_t>(n), static_cast<size_t>(k / block_size),
+                   &blocks) ||
       !checked_mul(blocks, block_bytes, size)) {
     return Status::kInvalidShape;
   }
@@ -174,8 +181,8 @@ Status activation_packed_size(QuantActivationFormat format, long long n,
     return Status::kUnsupportedFormat;
   }
   size_t blocks = 0;
-  if (!checked_mul(static_cast<size_t>(n),
-                   static_cast<size_t>(k / block_size), &blocks) ||
+  if (!checked_mul(static_cast<size_t>(n), static_cast<size_t>(k / block_size),
+                   &blocks) ||
       !checked_mul(blocks, block_bytes, size)) {
     return Status::kInvalidShape;
   }
@@ -224,8 +231,7 @@ Status qgemv_pack_weighted(QuantFormat format, const float* weights,
     }
   }
   if (format != QuantFormat::kQ8_0 && format != QuantFormat::kQ4_0 &&
-      format != QuantFormat::kTQ2_0 &&
-      !quant::gguf_pack_supported(format)) {
+      format != QuantFormat::kTQ2_0 && !quant::gguf_pack_supported(format)) {
     return Status::kUnsupportedFormat;
   }
   if (quant::gguf_pack_supported(format)) {
@@ -234,10 +240,11 @@ Status qgemv_pack_weighted(QuantFormat format, const float* weights,
                : Status::kInvalidArgument;
   }
   if (format == QuantFormat::kTQ2_0) {
-    // The public pack operation does not expose the optional dequantized tensor.
-    // Reuse the output matrix as temporary storage after validating finiteness;
-    // tq2_0_pack reads a whole block before writing the corresponding values.
-    // A dedicated scratch avoids surprising callers that overlap the buffers.
+    // The public pack operation does not expose the optional dequantized
+    // tensor. Reuse the output matrix as temporary storage after validating
+    // finiteness; tq2_0_pack reads a whole block before writing the
+    // corresponding values. A dedicated scratch avoids surprising callers that
+    // overlap the buffers.
     size_t elements = 0;
     if (!checked_mul(static_cast<size_t>(n), static_cast<size_t>(k),
                      &elements) ||
@@ -245,8 +252,8 @@ Status qgemv_pack_weighted(QuantFormat format, const float* weights,
       return Status::kInvalidShape;
     }
     auto scratch = std::make_unique<float[]>(elements);
-    return tq2_0_pack(weights, static_cast<std::uint8_t*>(packed), scratch.get(),
-                      n, k);
+    return tq2_0_pack(weights, static_cast<std::uint8_t*>(packed),
+                      scratch.get(), n, k);
   }
   const bool packed_ok =
       format == QuantFormat::kQ8_0
@@ -304,9 +311,8 @@ Status quant_activation_pack(QuantActivationFormat format, const float* input,
              : Status::kInvalidArgument;
 }
 
-Status quant_activation_unpack(QuantActivationFormat format,
-                               const void* packed, long long n, long long k,
-                               float* output) {
+Status quant_activation_unpack(QuantActivationFormat format, const void* packed,
+                               long long n, long long k, float* output) {
   const Status status = validate_activation(format, n, k);
   if (status != Status::kOk) return status;
   size_t ignored = 0;
@@ -332,10 +338,18 @@ Status qgemv(QuantFormat format, const void* packed, const float* x, float* y,
     return Status::kInvalidArgument;
   }
   if (format == QuantFormat::kQ8_0) {
-    resolve_q8_0().fn(static_cast<const quant::BlockQ8_0*>(packed), x, y, n,
-                      k);
+    resolve_q8_0().fn(static_cast<const quant::BlockQ8_0*>(packed), x, y, n, k);
   } else {
-    resolve_gguf().fn(format, packed, x, y, n, k);
+    const GgufVariant& variant = resolve_gguf();
+    if (format == QuantFormat::kQ4_0 && std::strcmp(variant.name, "ref") == 0) {
+      // Q4_0 has a format-specialized portable row kernel. The generic GGUF
+      // element decoder remains the oracle for the other formats, but is much
+      // slower for this common decode path.
+      quant::q4_0_gemv_ref(static_cast<const quant::BlockQ4_0*>(packed), x, y,
+                           n, k);
+    } else {
+      variant.fn(format, packed, x, y, n, k);
+    }
   }
   return Status::kOk;
 }
@@ -349,7 +363,8 @@ Status qgemv_quantized_activation(QuantFormat weight_format,
   if (weight_status != Status::kOk) return weight_status;
   const Status activation_status = validate_activation(activation_format, 1, k);
   if (activation_status != Status::kOk) return activation_status;
-  if (packed_weights == nullptr || packed_activation == nullptr || y == nullptr) {
+  if (packed_weights == nullptr || packed_activation == nullptr ||
+      y == nullptr) {
     return Status::kInvalidArgument;
   }
   try {
@@ -371,9 +386,13 @@ const char* qgemv_variant(QuantFormat format) {
   }
   long long ignored_size = 0;
   std::size_t ignored_bytes = 0;
-  return quant::gguf_format_info(format, &ignored_size, &ignored_bytes)
-             ? resolve_gguf().name
-             : "unsupported";
+  if (!quant::gguf_format_info(format, &ignored_size, &ignored_bytes)) {
+    return "unsupported";
+  }
+  const GgufVariant& variant = resolve_gguf();
+  return format == QuantFormat::kQ4_0 && std::strcmp(variant.name, "ref") == 0
+             ? "q4_0_ref"
+             : variant.name;
 }
 
 }  // namespace quixicore_cpu
