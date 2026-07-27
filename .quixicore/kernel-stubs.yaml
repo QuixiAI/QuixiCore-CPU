@@ -1,0 +1,382 @@
+---
+schema_version: 0.2
+backend: cpu
+backend_revision: '0159223979db'
+inventory_date: '2026-07-27'
+abi: kernel_call_v1
+generated_from:
+- QuixiCore/registry/operations.yaml
+- ".quixicore/kernels.yaml"
+canonical_operation_count: 303
+stub_count: 74
+stubs:
+  adaptive_norm_modulation:
+    family: diffusion
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  adaptive_norm_modulation_qkv:
+    family: diffusion
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  adaptive_rms_norm_modulation:
+    family: diffusion
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  adaptive_rms_norm_modulation_qkv:
+    family: diffusion
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  all_gather_gemm:
+    family: collectives
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  all_reduce_rms_norm:
+    family: collectives
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  attention_gate_residual:
+    family: attention
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  audio_resample:
+    family: audio
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  causal_conv3d_cache_update:
+    family: convolution
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  causal_conv_gate_residual:
+    family: audio
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  classifier_free_guidance_combine:
+    family: diffusion
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  classifier_free_guidance_scheduler_step:
+    family: diffusion
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  conv_transpose_overlap_add:
+    family: audio
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  ctc_decode:
+    family: audio
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  deformable_attention:
+    family: vision
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  deterministic_noise:
+    family: diffusion
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  diffusion_scheduler_step:
+    family: diffusion
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  down_projection_residual:
+    family: matmul
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  downsample_3d:
+    family: convolution
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  downsample_conv2d:
+    family: convolution
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  flow_euler_step:
+    family: diffusion
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  flow_step_action_clamp_denormalize:
+    family: vla_world_models
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  gate_up_projection_swiglu:
+    family: matmul
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  geglu_projection:
+    family: matmul
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  grammar_mask:
+    family: sampling
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  grid_sample:
+    family: vision
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  group_norm_silu:
+    family: convolution
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  istft:
+    family: audio
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  joint_multimodal_attention:
+    family: multimodal
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  kv_cache_compact:
+    family: serving
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  kv_cache_offload:
+    family: serving
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  log_mel_spectrogram:
+    family: audio
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  logits_bias_penalties_top_k_top_p_sample:
+    family: sampling
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  mixed_prefill_decode_attention:
+    family: attention
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  moe_all_to_all_dispatch:
+    family: collectives
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  moe_grouped_gemm_swiglu:
+    family: moe
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  moe_route_top_k_prefix_sum_permute:
+    family: moe
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  moe_unpermute_weighted_reduce:
+    family: moe
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  multi_codebook_sample:
+    family: audio
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  multimodal_rope_nd:
+    family: multimodal
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  multimodal_stream_deinterleave:
+    family: multimodal
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  multimodal_stream_interleave:
+    family: multimodal
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  multistream_logits_codebook_sample:
+    family: audio
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  non_max_suppression:
+    family: vision
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  overlap_add:
+    family: audio
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  paged_attention_output_projection_residual:
+    family: attention
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  patchify_nd:
+    family: diffusion
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  patchify_projection_position:
+    family: vision
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  pixel_shuffle:
+    family: vision
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  prefix_append_attention:
+    family: attention
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  qk_norm_rope_attention:
+    family: attention
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  qkv_projection_qk_norm_rope_kv_append:
+    family: attention
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  ragged_pack:
+    family: multimodal
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  ragged_unpack:
+    family: multimodal
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  reduce_scatter_gemm:
+    family: collectives
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  residual_rms_norm_quant:
+    family: norms
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  residual_vector_quantize_decode:
+    family: audio
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  residual_vector_quantize_encode:
+    family: audio
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  resize_bicubic:
+    family: vision
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  resize_bilinear:
+    family: vision
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  resize_normalize_layout_quant:
+    family: vision
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  rnnt_beam_step:
+    family: audio
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  rnnt_joiner:
+    family: audio
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  roi_align:
+    family: vision
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  rope_3d:
+    family: diffusion
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  rvq_distance_argmin_residual_update:
+    family: audio
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  speculative_verify_accept_compact_kv:
+    family: serving
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  stft:
+    family: audio
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  streaming_conv1d_state:
+    family: audio
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  temporal_upsample_conv3d:
+    family: convolution
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  unpatchify_nd:
+    family: diffusion
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  upsample_3d:
+    family: convolution
+    kind: primitive
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  upsample_conv2d:
+    family: convolution
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
+  window_rfft_power_mel_log:
+    family: audio
+    kind: fused
+    reason: planned contract; no backend implementation evidence
+    source_ids: []
