@@ -241,6 +241,21 @@ if(QUIXICORE_CPU_BUILD_TESTS)
   target_link_libraries(test_backend_status PRIVATE QuixiCoreCPU::quixicore_cpu)
   add_test(NAME backend_status COMMAND test_backend_status)
 
+  # Conformance against the umbrella's shared quant vectors. The vector
+  # directory is a cache variable so a checkout that does not sit beside the
+  # umbrella can still run it; the test is skipped rather than failed when the
+  # vectors are absent.
+  set(QUIXICORE_VECTORS "${CMAKE_CURRENT_SOURCE_DIR}/../test-vectors/quant"
+      CACHE PATH "Path to the shared QuixiCore quant test vectors")
+  if(EXISTS "${QUIXICORE_VECTORS}/e8m0.json")
+    add_executable(test_quant_vectors tests/conformance/test_quant_vectors.cpp)
+    add_test(NAME quant_vectors
+             COMMAND test_quant_vectors "${QUIXICORE_VECTORS}")
+  else()
+    message(STATUS "quant vectors not found at ${QUIXICORE_VECTORS}; "
+                   "skipping conformance test")
+  endif()
+
   add_executable(test_cpu_features tests/unit/test_cpu_features.cpp)
   target_link_libraries(test_cpu_features PRIVATE QuixiCoreCPU::quixicore_cpu)
   add_test(NAME cpu_features COMMAND test_cpu_features)
