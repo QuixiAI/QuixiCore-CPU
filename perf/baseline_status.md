@@ -1,10 +1,51 @@
-# Baseline Status
+# QuixiCore CPU Baseline Status
 
-This file tracks accepted baseline measurements for supported or in-progress CPU
-kernel paths. A baseline is required before reporting a speedup or updating
-backend coverage status.
+Method and optimization-loop rules live in `perf/perf.md`. The append-only
+run log is `perf/optimization_status.md` (every entry cited below by date and
+entry title). Distilled truths, rejections, and standing rules are in
+`perf/findings.md`; the active idea beam is in `perf/backlog.md`. Raw harness
+output lives under `perf/results/` (git-ignored). A baseline recorded here is
+required before reporting a speedup or updating backend coverage status.
 
-## Current Harness Index
+## Environment
+
+Hosts on which the recorded baselines were measured (dated by first/last
+appearance in the notebook):
+
+- Apple M4 Max — 16 logical cores (12P+4E), 128 GB; macOS 26.5.1; Apple
+  Clang 21.0.0; baseline arch flags (2026-07-07 rows).
+- Apple M5 Max — 18 physical/logical cores (6 performance, 12 efficiency),
+  128 GB; macOS 26.5.2; Apple Clang 21.0.0 (2026-07-21 through 2026-07-24
+  rows).
+- AMD EPYC 7702 — one socket/NUMA node, 64 physical cores, SMT off, 256 MiB
+  aggregate L3, 1.0 TiB memory; AVX2/FMA/F16C only; Ubuntu Linux
+  6.8.0-134-generic; GCC 13.3.0 (2026-07-23/24 x86 rows).
+- Intel Xeon Gold 6454S (Sapphire Rapids) — AVX2, AVX-512F/BW/VL/DQ, AVX-512
+  VNNI; AMX tile/int8/bf16 detected, no AMX kernel exists; GCC 15.2.0, Linux
+  x86-64 (2026-07-24/25 rows).
+
+Cross-machine values are recorded separately and are never compared as
+speedups. Memory configuration details beyond the above: TBD (record on next
+session).
+
+## Build + gate (the standing invariant)
+
+- CMake Release without LTO; the library is deliberately not built with
+  `-march=native`. Portable sources use baseline arch flags; ISA sources are
+  compiled per-file and run only after runtime feature checks
+  (`perf/perf.md`; 2026-07-23, M5 portable fallback and GGUF Q4 routing for
+  the `QUIXICORE_CPU_ENABLE_ISA_VARIANTS=OFF` portable-only build mode).
+- Every benchmark case runs a finite, elementwise `atol + rtol * |reference|`
+  correctness gate before timing (2026-07-21, CPU kernel correctness
+  hardening).
+- x86 AVX-512 routes require the exact AVX-512F/BW/VL/DQ subset, VNNI routes
+  additionally require AVX-512 VNNI (2026-07-25, INT8_MIN-safe x86 IDOT and
+  exact AVX-512 gating).
+- Performance gate: no kernel/routing/benchmark change or performance claim
+  is committed without a focused optimization run recorded in
+  `perf/optimization_status.md` (repository `AGENTS.md`).
+
+### Current Harness Index
 
 `quixicore_cpu_bench` cases available for baselining (see
 `benchmarks/README.md`):
@@ -46,6 +87,15 @@ backend coverage status.
 | `basert_embedding` | Token/type table preparation and mask-aware terminal RMS/L2 pool | Live source-tree Metal BaseRT embedding baseline | `scripts/bench --preset quick --kernel basert_embedding --threads 1` (repeat at 16 threads) |
 | `basert_vision` | 2-D/3-D patch extraction/projection, learned/factorized positions, regular/coordinate pooling, and Gemma/Qwen 2-D RoPE | Published Metal BaseRT vision semantic baseline | `scripts/bench --preset quick --kernel basert_vision --threads 1` (repeat at 16 threads) |
 | `basert_audio` | NWC general/symmetric/causal depthwise convolution, cross-attention, and relative attention | Published Metal BaseRT audio/attention semantic baseline | `scripts/bench --preset quick --kernel basert_audio --threads 1` (repeat at 16 threads) |
+
+
+## Kernel roofline snapshot
+
+Dated accepted measurements, newest first. The table records medians (with
+min/max or CV), not %-of-ceiling; per-kernel roofline ceilings are TBD
+(record on next session). Machine bandwidth anchors measured so far: Apple
+M4 Max single-thread DRAM triad ~115-117 GB/s and aggregate 251-304 GB/s at
+8-12 threads (2026-07-07, Benchmark harness bring-up; Threading layer).
 
 | Date | Kernel | Dtype / Format | Shape Set | Target | Command | Median | Min / Max or Variance | Artifact | Notes |
 |---|---|---|---|---|---|---:|---|---|---|
@@ -121,12 +171,114 @@ backend coverage status.
 | 2026-07-22 | q8_0 QGEMM | q8_0 weights / f32 activation | M16 N2048 K2048 | Apple M5 Max, 1 / 6 threads | same | 3.815875 / 1.377552 ms | CV 0.0161 / 0.0968 | same | dequantized scalar baseline 31.739709 ms at t1; candidate |
 | 2026-07-07 | qgemv (`neon`, contract path) | q8_0 | quant_matmul m=1 N4096 K4096 | Apple M4 Max, 1 thread, NEON f32-act | `scripts/bench --preset quick --kernel qgemv` | 1.0344 ms | CV 0.027 | `perf/results/2026-07-07/033244-quick/` | family numerics (dequant W x f32 x); 17.2 W-GB/s; in-progress |
 | 2026-07-07 | qgemv (`neon`, contract path) | q8_0 | quant_matmul m=1 N8192 K8192 | Apple M4 Max, 1 thread, NEON f32-act | `scripts/bench --preset quick --kernel qgemv` | 4.1164 ms | CV 0.022 | `perf/results/2026-07-07/033244-quick/` | family numerics; 17.3 W-GB/s; in-progress |
-| 2026-07-07 | qgemv (`dotprod_i8`, 8 threads) | q8_0 | quant_matmul m=1 N4096 K4096 | Apple M4 Max, 8 threads, NEON DotProd | `scripts/bench --preset quick --kernel qgemv --threads 8` | 0.0679 ms | CV 0.024 | `perf/results/2026-07-07/030745-quick/` | Historical internal measurement; the variant now routes only through public qgemv_w8a8 |
 | 2026-07-07 | mem_triad (8 threads) | f32 | ws_192MiB (aggregate DRAM roofline) | Apple M4 Max, 8 threads | `scripts/bench --preset quick --kernel mem_triad --threads 8` | 0.8022 ms | CV 0.058 | `perf/results/2026-07-07/030745-quick/` | 251 GB/s (304 at 12 threads); system probe |
 | 2026-07-07 | rms_norm (`neon`) | f32 | decode_small R1 H4096 | Apple M4 Max, 1 thread, NEON | `scripts/bench --preset quick --kernel rms_norm` | 0.52 us | CV 0.056 | `perf/results/2026-07-07/024347-quick/` | 94.4 GB/s cache-resident; in-progress |
 | 2026-07-07 | rms_norm (`neon`) | f32 | stress R512 H4096 | Apple M4 Max, 1 thread, NEON | `scripts/bench --preset quick --kernel rms_norm` | 263.33 us | CV 0.052 | `perf/results/2026-07-07/024347-quick/` | 63.8 GB/s; in-progress |
-| 2026-07-07 | qgemv (`dotprod_i8`) | q8_0 | quant_matmul m=1 N4096 K4096 | Apple M4 Max, 1 thread, NEON DotProd | historical `QUIXICORE_CPU_QGEMV_VARIANT=dotprod_i8 scripts/bench --preset quick --kernel qgemv` | 0.3006 ms | CV 0.020 | `perf/results/2026-07-07/023619-quick/` | Historical activation-quantizing measurement, 59.3 W-GB/s; the equivalent implementation now routes through `qgemv_w8a8` and its separate override. |
-| 2026-07-07 | qgemv (`dotprod_i8`) | q8_0 | quant_matmul m=1 N8192 K8192 | Apple M4 Max, 1 thread, NEON DotProd | historical `QUIXICORE_CPU_QGEMV_VARIANT=dotprod_i8 scripts/bench --preset quick --kernel qgemv` | 1.2010 ms | CV 0.018 | `perf/results/2026-07-07/023619-quick/` | Historical activation-quantizing measurement, 59.4 W-GB/s; current public surface is `qgemv_w8a8`. |
 | 2026-07-07 | qgemv (`ref`) | q8_0 | quant_matmul m=1 N4096 K4096 | Apple M4 Max, 1 thread, baseline flags | `scripts/bench --preset quick --kernel qgemv` | 4.3189 ms | CV 0.014 | `perf/results/2026-07-07/022305-quick/` | scalar reference; in-progress, not claimed supported |
 | 2026-07-07 | qgemv (`ref`) | q8_0 | quant_matmul m=1 N8192 K8192 | Apple M4 Max, 1 thread, baseline flags | `scripts/bench --preset quick --kernel qgemv` | 17.2801 ms | CV 0.022 | `perf/results/2026-07-07/022305-quick/` | scalar reference; in-progress, not claimed supported |
 | 2026-07-07 | qgemv (`ref`) | q8_0 | quant_matmul m=1 N16384 K4096 | Apple M4 Max, 1 thread, baseline flags | `scripts/bench --preset quick --kernel qgemv` | 17.1908 ms | CV 0.011 | `perf/results/2026-07-07/022305-quick/` | scalar reference; in-progress, not claimed supported |
+
+## Per-family status
+
+Only statements actually recorded in the notebook; dates cite the entry.
+
+- System probes (`mem_triad`, `sgemv_naive`): validated harness anchors;
+  no kernel claim (2026-07-07, Benchmark harness bring-up).
+- q8_0/q4_0 GEMV and W8A8: `neon` f32-activation contract default; q8_0
+  W8A8 DotProd 5.33x over ref; q4_0 lanes are portable correctness anchors,
+  q4_0 W8A8 SDOT landed with perf pending (2026-07-07 realignment;
+  2026-07-22 entries).
+- rms_norm: NEON variant 4.3x-4.6x over ref; threaded stress saturates
+  bandwidth (2026-07-07 entries).
+- GGUF stored formats: all 25 stored formats have canonical pack/unpack and
+  direct decode/GEMV routes; direct packed dots 4.68x-45.22x over element
+  decode; automatic x86 route is AVX2 (2026-07-22 stored-quant entries;
+  2026-07-24 Sapphire Rapids closure).
+- Canonical quant matrix M0-M5: M0 registration, M1 lifecycle/import, M2
+  projection (AArch64 + native x86 three-pass evidence), M3 fusions F1-F7
+  and serving S1-S7, M4 compressed caches A1-A10, and M5 portable fallback
+  are complete as recorded; fusions claim materialization removal, not
+  blanket one-thread speedups (2026-07-22 through 2026-07-23 entries).
+- BaseQN: direct projection, LM-head argmax, grouped expert GEMM/SwiGLU
+  ported and optimized; no claim versus already-dequantized dense at one
+  thread (2026-07-23 entries).
+- KV caches: Q8_0 codec/copy/attention and FP8/MXFP8/TurboQuant/KV3 typed
+  caches with direct online attention; KV3 one-thread direct attention
+  remains regressive and is recorded without claim (2026-07-23/24 entries).
+- Rotary/norm fusions: positioned RoPE, M-RoPE, fused positioned QK
+  norm/RoPE retained with fused-case wins (2026-07-23 entry).
+- Linear attention/adapters: GDN family and direct F16 LoRA retained with
+  measured scheduling/crossover selections (2026-07-24 entries).
+- BaseRT vision/audio/auxiliary: four waves ported with hybrid storage
+  selection; no vendor-library comparison claimed (2026-07-24 entries).
+- Colibri ops: integer/selection routes retained with material speedups;
+  E8/IQ3, MLA absorption, RoPE, paired-projection primitives remain
+  correctness candidates without a performance tier (2026-07-22 entry).
+- llama.cpp parity: 105/105 operation symbols classified with portable
+  reference coverage; ISA tiers remain separate (2026-07-22 closure entry).
+- Threading/dispatch: fork-join pool with row partitioning; collision-safe
+  scheduling patterns; Sapphire Rapids AVX-512/VNNI routes selected where
+  measured (2026-07-07, 2026-07-24 entries).
+
+## Deferred (bigger projects, flagged not faked)
+
+- AMX kernel route: AMX tile/int8/bf16 detection is hardware evidence only;
+  no compute tier is asserted (2026-07-24, Sapphire Rapids closure).
+- NUMA scheduling policy: deferred until multi-socket hardware exists
+  (2026-07-07, Threading layer).
+- Affinity pinning and hybrid-core placement: unpinned OS-default
+  scheduling throughout; threaded CVs up to ~0.36 are recorded as scaling
+  context, not latency claims (2026-07-07 onward).
+- SVE/SME and i8mm (smmla) kernels: unmeasured; see `perf/backlog.md`.
+- Native x86 packed FP8 microkernels and wider AVX2 weight block dots:
+  open M2 work (2026-07-23 x86 entries).
+- BitNet a4.8 Q9 sparse activation preparation: Phase-8 scope (2026-07-23,
+  F3 and F6/F7 entries).
+- Per-kernel roofline ceilings for the snapshot table: TBD (record on next
+  session).
+
+## Decision log
+
+Standing routing/policy decisions with their evidence dates:
+
+- `neon` f32-activation is the qgemv contract default; `dotprod_i8` is
+  excluded from public qgemv dispatch and serves `qgemv_w8a8`
+  (2026-07-07, qgemv contract realignment; 2026-07-21 hardening removed
+  the env override).
+- Automatic GGUF GEMV dispatch stays AVX2 on Sapphire Rapids; W8A32 uses
+  AVX-512 and INT8/W4A8 use AVX-512 VNNI (2026-07-24, dispatch closure).
+- Canonical dual W8A8 stays on the portable panel route on EPYC AVX2; the
+  direct AVX2 route measured slower (2026-07-23, M2 x86 M16/M128
+  projection).
+- `blocked_ref` is a force-only GGUF experiment; automatic generic Q4_0
+  fallback uses the specialized portable reference (2026-07-23, M5 entry).
+- Q4_0/Q8_0/IQ4 GEMM with M<64 retains the canonical GEMV route; larger M
+  and K formats use the packed panel kernel (2026-07-22, planned P0-P2
+  batch).
+- MoE expert-batch union is enabled only for repeated experts with a live
+  worker pool (2026-07-22, Colibri excavation).
+- Online-attention score tile stays at 16 (2026-07-23, M4 A1/A2).
+- Output-panel scheduling grain stays at 1 (2026-07-23, M2 typed GEMV
+  panels).
+- Exact top-p keeps one vocabulary row of logits by design; bounded-memory
+  selectors are retained even where materialized projection is faster
+  (2026-07-23, S3/S4).
+- AVX-512 routes require the exact F/BW/VL/DQ (+VNNI) subset at runtime
+  (2026-07-25, INT8_MIN-safe IDOT).
+
+## Superseded (historical)
+
+Rows moved verbatim from the snapshot table; the reason precedes each row.
+
+Reason: historical activation-quantizing `dotprod_i8` measurements taken
+when the variant was publicly routed through `qgemv`; the contract
+realignment (2026-07-07) and correctness hardening (2026-07-21) moved that
+implementation behind `qgemv_w8a8`, so these rows no longer describe a
+reachable `qgemv` route.
+
+| Date | Kernel | Dtype / Format | Shape Set | Target | Command | Median | Min / Max or Variance | Artifact | Notes |
+|---|---|---|---|---|---|---:|---|---|---|
+| 2026-07-07 | qgemv (`dotprod_i8`, 8 threads) | q8_0 | quant_matmul m=1 N4096 K4096 | Apple M4 Max, 8 threads, NEON DotProd | `scripts/bench --preset quick --kernel qgemv --threads 8` | 0.0679 ms | CV 0.024 | `perf/results/2026-07-07/030745-quick/` | Historical internal measurement; the variant now routes only through public qgemv_w8a8 |
+| 2026-07-07 | qgemv (`dotprod_i8`) | q8_0 | quant_matmul m=1 N4096 K4096 | Apple M4 Max, 1 thread, NEON DotProd | historical `QUIXICORE_CPU_QGEMV_VARIANT=dotprod_i8 scripts/bench --preset quick --kernel qgemv` | 0.3006 ms | CV 0.020 | `perf/results/2026-07-07/023619-quick/` | Historical activation-quantizing measurement, 59.3 W-GB/s; the equivalent implementation now routes through `qgemv_w8a8` and its separate override. |
+| 2026-07-07 | qgemv (`dotprod_i8`) | q8_0 | quant_matmul m=1 N8192 K8192 | Apple M4 Max, 1 thread, NEON DotProd | historical `QUIXICORE_CPU_QGEMV_VARIANT=dotprod_i8 scripts/bench --preset quick --kernel qgemv` | 1.2010 ms | CV 0.018 | `perf/results/2026-07-07/023619-quick/` | Historical activation-quantizing measurement, 59.4 W-GB/s; current public surface is `qgemv_w8a8`. |
+
