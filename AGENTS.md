@@ -1,40 +1,192 @@
+<!-- qx:shared:begin header v1 -->
 # Agent Instructions
 
-This is the QuixiCore CPU backend repository. The umbrella contract repository is
-`QuixiAI/QuixiCore`.
+This is the QuixiCore CPU backend. Kernel work must be correctness-first,
+measurement-driven, and recorded in the performance notebook.
+<!-- qx:shared:end header -->
 
-## Rules
+<!-- qx:shared:begin read-first v1 -->
+## Read First
 
-- Preserve the public QuixiCore contract. CPU-specific packing, ISA dispatch, and
-  thread scheduling must stay behind the shared API semantics.
-- Before changing a contract-facing kernel, read the relevant umbrella registry
-  and spec files:
-  - `registry/kernels.yaml`
-  - `registry/quant-formats.yaml`
-  - `registry/benchmark-shapes.yaml`
-  - `registry/tolerances.yaml`
-  - `matrices/`
-- Do not claim support for a kernel, dtype, quant format, architecture feature,
-  or performance tier without correctness and benchmark evidence in this repo.
-- Kernel implementation or routing work requires at least one focused
-  performance optimization run on an affected CPU path. Read `perf/perf.md`
-  first and record the result in `perf/optimization_status.md`.
-- Pure documentation, metadata, and scaffolding changes may skip a kernel
-  performance run, but they must not assert performance improvements.
+- User-facing overview: `README.md`.
+- Repository layout: `docs/architecture.md`.
+- Performance operating guide: `perf/perf.md`.
+- Established findings: `perf/findings.md` — read before proposing any
+  experiment; do not re-derive or retry anything listed there without new
+  evidence.
+- Idea backlog: `perf/backlog.md` — pick the next experiment from here; update
+  it when you finish one.
+- Optimization notebook: `perf/optimization_status.md`.
+- Baseline index: `perf/baseline_status.md`.
+- Kernel metadata: `.quixicore/kernels.yaml` and
+  `.quixicore/quant-formats.yaml`.
+<!-- qx:shared:end read-first -->
 
-## Build Rules
+<!-- qx:backend:begin read-first-extras -->
+<!-- qx:backend:end read-first-extras -->
 
-- Use the checked-in CMake presets or Makefile targets.
-- Keep every generated configuration under `build/<profile>/`.
-- Do not create top-level `build-*` or `cmake-build-*` directories. Add a
-  reusable preset for a lasting configuration, or use `build/scratch/` for a
-  temporary experiment and remove it afterward.
-- Build trees are disposable. Record durable correctness and performance
-  evidence under the documented test and `perf/` paths.
+<!-- qx:backend:begin backend-notes -->
+## Umbrella Contract Sources
 
-## Evidence Locations
+Before changing a contract-facing kernel, read the relevant registry and spec
+files in the umbrella `QuixiAI/QuixiCore` checkout (the parent or a sibling
+directory): `registry/kernels.yaml`, `registry/quant-formats.yaml`,
+`registry/benchmark-shapes.yaml`, `registry/tolerances.yaml`, and `matrices/`.
+Do not claim support for a kernel, dtype, quant format, architecture feature,
+or performance tier without correctness and benchmark evidence in this repo.
+<!-- qx:backend:end backend-notes -->
 
-- Operating guide: `perf/perf.md`
-- Optimization notebook: `perf/optimization_status.md`
-- Baseline index: `perf/baseline_status.md`
-- Raw benchmark outputs: `perf/results/`
+<!-- qx:shared:begin perf-gate v1 -->
+## Performance Optimization Requirement
+
+Before committing any kernel implementation, kernel routing change, benchmark
+change, or performance claim, the agent must complete at least one focused
+performance optimization run on an affected kernel.
+
+A valid run includes:
+
+- The kernel, public route, dtype/format, and shape set.
+- Correctness for the touched path.
+- Baseline/current timing and candidate timing when testing a variant.
+- CPU model, core count, ISA target, OS, compiler and flags, thread count,
+  command line, warmups, iterations, median, and variance or min/max.
+- A keep/reject decision in `perf/optimization_status.md`.
+
+If a suitable CPU build/benchmark toolchain is unavailable, do not commit a kernel
+optimization or speedup claim. Stop and report the blocker, or restrict the
+commit to docs/scaffolding with no performance claim.
+
+Pure documentation and metadata-only commits may skip the kernel perf run, but
+they must not claim a performance improvement.
+<!-- qx:shared:end perf-gate -->
+
+<!-- qx:shared:begin evidence-rules v1 -->
+## Evidence Rules
+
+- A run that times out or crashes is INCONCLUSIVE — never a rejection and never
+  a win. Record it as INCONCLUSIVE with the timeout or failure mode.
+- Only completed runs count as measurements. Never extrapolate from partial
+  iterations or a killed benchmark.
+- Report median plus variance or min/max from the stated warmup/iteration
+  counts. If the baseline and candidate ranges overlap, there is no claim —
+  rerun with more iterations or record INCONCLUSIVE.
+- Never compare numbers taken on different hosts, drivers, or toolchains
+  without saying so in the same sentence.
+- Notebook verdict vocabulary: LANDED, KEPT, REJECTED, CANDIDATE, DEFERRED,
+  INCONCLUSIVE, MIXED, RECORDED.
+<!-- qx:shared:end evidence-rules -->
+
+<!-- qx:shared:begin how-to-optimize v1 -->
+## How To Optimize
+
+- Start from `perf/perf.md`; form a bottleneck hypothesis before editing.
+- Change one meaningful factor at a time: tile/block shape, ISA dispatch, memory
+  layout, threading/affinity, fusion, dequant strategy, routing threshold, or
+  specialization.
+- Compare against optimized library paths (Accelerate/BLAS, oneDNN where
+  available), naive decompositions, and current CPU kernels where relevant.
+- Keep only wins that pass correctness, improve realistic priority shapes, and
+  do not regress supported edge shapes or tolerances.
+- Store raw output under `perf/results/`; copy durable conclusions into
+  `perf/optimization_status.md`. Do not commit large profiler traces.
+<!-- qx:shared:end how-to-optimize -->
+
+<!-- qx:shared:begin idea-selection v1 -->
+## Idea Selection (The Beam)
+
+- Keep `perf/backlog.md` to 3-5 active idea families, best first. Each family
+  carries a parent result, hypothesis, evidence so far, next action, and kill
+  criteria.
+- Pick the next experiment from the top of the beam unless the user directs
+  otherwise. Do not run a single-incumbent hill climb on one idea.
+- Do not kill a family on one failed singleton. If two ideas are individually
+  neutral but touch independent costs, try the combination before retiring
+  either.
+- When an experiment concludes, update the beam (advance or kill) and promote
+  durable conclusions to `perf/findings.md`. When a kill criterion fires,
+  record the kill and its reason in `perf/findings.md` so it is never retried.
+- New ideas that surface mid-run go to the backlog, not into scope creep.
+<!-- qx:shared:end idea-selection -->
+
+<!-- qx:shared:begin useful-commands v1 -->
+## Useful Commands
+
+```bash
+cmake --preset perf && cmake --build --preset perf
+ctest --preset test
+scripts/bench --preset quick --kernel <kernel>
+scripts/bench --out-dir "perf/results/$(date +%F)/<label>"
+```
+
+Use Instruments (macOS), `perf` (Linux), or compiler vectorization reports when
+timing does not explain a bottleneck. Record the trace path and conclusion, not
+the full trace.
+<!-- qx:shared:end useful-commands -->
+
+<!-- qx:shared:begin escalation v1 -->
+## Escalation Protocol
+
+- Stop and report to the user instead of improvising when required
+  hardware/runtime is unavailable, when branch or upstream state is ambiguous,
+  or when a correctness gate and a perf result conflict.
+- Use subagents for bulk reading (notebooks over ~1,000 lines), broad reference
+  searches, and multi-config sweeps. Subagents report numbers with full
+  provenance; the primary agent writes the notebook entry.
+- After two consecutive INCONCLUSIVE runs on one hypothesis, stop and present
+  the data rather than rerunning a third time.
+- When stuck (repeated rejects or sub-bar wins), re-read `perf/findings.md`,
+  profile before guessing again, and prefer one structural change from a
+  different beam family over another parameter retune.
+<!-- qx:shared:end escalation -->
+
+<!-- qx:shared:begin git-policy v1 -->
+## Git Publishing Policy
+
+- Never create, switch, rename, or choose a branch unless the user explicitly
+  requests it. The user owns branch selection.
+- Never create a pull request unless the user explicitly requests one.
+- When asked to "commit and push," commit on the branch that is already checked
+  out and push that same branch to its configured upstream.
+- If the current branch has no upstream, pushing it is blocked, or branch
+  selection is ambiguous, stop and ask the user rather than creating or
+  switching branches or opening a pull request.
+<!-- qx:shared:end git-policy -->
+
+<!-- qx:shared:begin build-policy v1 -->
+## Build Artifact Policy
+
+- Keep generated build artifacts under one repository-local `build/` root, with
+  incompatible configurations isolated as `build/<profile>/`.
+- Do not create top-level task-, agent-, experiment-, or architecture-named
+  build directories.
+- Add a reusable preset or wrapper for a lasting configuration; use
+  `build/scratch/` for a temporary experiment and remove it afterward.
+- Build trees are disposable. Never treat one as durable correctness or
+  performance evidence; record evidence under the documented `perf/` paths.
+<!-- qx:shared:end build-policy -->
+
+<!-- qx:shared:begin notebook-discipline v1 -->
+## Notebook Discipline
+
+- `perf/optimization_status.md` is append-only and ordered oldest-first. Never
+  rewrite or reorder existing entries.
+- New entry headings use the format `## YYYY-MM-DD: <kernel or pass> — VERDICT`
+  with a verdict from the Evidence Rules vocabulary.
+- After appending an entry, regenerate the index:
+  `python3 ../tools/perf_notebook.py index perf/optimization_status.md`
+  (run from this repository root; adjust the path if the umbrella checkout is
+  a sibling rather than the parent directory).
+- Distilled truths go to `perf/findings.md`; queued ideas go to
+  `perf/backlog.md`; the notebook holds the full evidence.
+<!-- qx:shared:end notebook-discipline -->
+
+<!-- qx:shared:begin hygiene v1 -->
+## Engineering Hygiene
+
+- Check `git status` before editing. Do not revert user changes.
+- Keep backend-local optimizations behind the public QuixiCore contract.
+- Update metadata, tests, docs, and bindings when changing public behavior.
+- Do not import reference implementation code unless licensing and provenance
+  have been reviewed.
+- Keep commits scoped and descriptive.
+<!-- qx:shared:end hygiene -->
