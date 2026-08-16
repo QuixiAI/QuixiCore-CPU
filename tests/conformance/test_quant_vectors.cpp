@@ -111,5 +111,12 @@ int main(int argc, char** argv) {
 
   std::printf("E8M0 vs %s/e8m0.json: %s (%zu/%zu codes)\n", dir.c_str(),
               bad ? "FAIL" : "conformant", codes.size() - bad, codes.size());
+  // Machine-readable conformance line (umbrella docs/correctness.md); capture
+  // with: <binary> | sed -n 's/^QC-CONFORMANCE //p' > .quixicore/conformance.jsonl
+  std::printf(
+      "QC-CONFORMANCE {\"schema\":1,\"backend\":\"cpu\",\"format\":\"e8m0\","
+      "\"decoder\":\"e8m0_decode\",\"vectors\":\"test-vectors/quant/e8m0.json\","
+      "\"cases\":%zu,\"failed\":%d,\"verdict\":\"%s\"}\n",
+      codes.size(), bad, bad ? "divergent" : "conformant");
   return bad ? 1 : 0;
 }
