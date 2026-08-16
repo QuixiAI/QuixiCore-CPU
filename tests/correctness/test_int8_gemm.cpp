@@ -31,9 +31,10 @@ bool check_shape(long long m, long long n, long long k, bool asymmetric) {
     value = static_cast<std::int8_t>(random_u32() & 255u);
   }
   for (std::int8_t& value : x) {
-    value = static_cast<std::int8_t>(int(random_u32() % 255u) - 127);
+    value = static_cast<std::int8_t>(random_u32() & 255u);
   }
-  if (!weights.empty()) weights[0] = -128;
+  if (!weights.empty()) weights[0] = -1;
+  if (!x.empty()) x[0] = -128;
   for (long long output = 0; output < n; ++output) {
     weight_scale[output] = 0.001f * static_cast<float>(output + 1);
     std::int32_t sum = 0;
@@ -91,7 +92,9 @@ int main() {
         (std::strcmp(forced, "avx2") == 0 && features.avx2) ||
         (std::strcmp(forced, "dotprod") == 0 && features.dotprod) ||
         (std::strcmp(forced, "i8mm") == 0 && features.i8mm) ||
-        (std::strcmp(forced, "avx512_vnni") == 0 && features.avx512_vnni);
+        (std::strcmp(forced, "avx512_vnni") == 0 && features.avx512f &&
+         features.avx512bw && features.avx512vl && features.avx512dq &&
+         features.avx512_vnni);
     if (available &&
         std::strcmp(quixicore_cpu::int8_gemm_variant(), forced) != 0) {
       std::cerr << "FAIL: requested int8 GEMM route " << forced

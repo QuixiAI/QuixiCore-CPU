@@ -88,6 +88,14 @@ int main() {
                           false) == Status::kOk &&
                     close(int_y[0], 0.0f) && close(int_y[1], -1.5f),
                 "int8 gemm");
+  const std::int32_t int_weight_sums[] = {5, 1};
+  const int activation_zero_points[] = {1};
+  ok &= require(qgemm_w8a8_azp(
+                    int_weights, int_x, weight_scale, activation_scale,
+                    int_weight_sums, activation_zero_points, int_y, 1, 2,
+                    4) == Status::kOk &&
+                    close(int_y[0], -5.0f) && close(int_y[1], -2.0f),
+                "W8A8 asymmetric-zero-point GEMM");
 
   std::vector<std::uint8_t> fp8_weights(8), fp8_x(4);
   for (int i = 0; i < 8; ++i) {
@@ -131,6 +139,17 @@ int main() {
                     close(bitnet_direct[0], bitnet_fused[0]) &&
                     close(bitnet_direct[1], bitnet_fused[1]),
                 "BitNet direct and fused GEMM");
+  float w2a8_direct[2], w2a8_fused[2];
+  ok &= require(qgemm_w2a8(
+                        bitnet_packed.data(), activation_codes.data(),
+                        &dynamic_scale, w2a8_direct, 1, 2, kK) == Status::kOk &&
+                    qgemm_w2a8_fused(bitnet_packed.data(), x.data(),
+                                     w2a8_fused, 1, 2, kK) == Status::kOk &&
+                    close(w2a8_direct[0], bitnet_direct[0]) &&
+                    close(w2a8_direct[1], bitnet_direct[1]) &&
+                    close(w2a8_fused[0], bitnet_fused[0]) &&
+                    close(w2a8_fused[1], bitnet_fused[1]),
+                "W2A8 direct and fused GEMM aliases");
 
   int tokens[kM] = {};
   ok &= require(quantized_lm_head_sample(

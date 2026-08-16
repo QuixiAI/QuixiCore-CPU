@@ -64,7 +64,8 @@ int main() {
         std::strcmp(forced, "ref") == 0 ||
         (std::strcmp(forced, "neon") == 0 && features.neon) ||
         (std::strcmp(forced, "avx2") == 0 && features.avx2 && features.fma) ||
-        (std::strcmp(forced, "avx512") == 0 && features.avx512f);
+        (std::strcmp(forced, "avx512") == 0 && features.avx512f &&
+         features.avx512bw && features.avx512vl && features.avx512dq);
     if (available &&
         std::strcmp(quixicore_cpu::qgemm_w8a32_variant(), forced) != 0) {
       std::cerr << "FAIL: requested W8A32 route " << forced

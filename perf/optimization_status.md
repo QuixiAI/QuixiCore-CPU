@@ -7,6 +7,63 @@ claim must add an entry here.
 Every future kernel implementation, routing change, benchmark change, or
 performance claim must add a focused optimization entry here.
 
+## 2026-07-25: INT8_MIN-safe x86 IDOT and exact AVX-512 gating
+
+Status: retain the correctness fix. Row-scaled INT8 GEMM now accepts the full
+public `int8_t` activation domain on AVX2 and AVX-512 VNNI. A matrix-level SIMD
+scan preserves the original hot dot loop when activations are in `[-127,127]`;
+only matrices containing `-128` enter a safe block path. The asymmetric
+quantizer also computes extrema, range, and scale arithmetic in `double`, so
+finite `{-FLT_MAX, FLT_MAX}` input produces a finite positive FP32 scale and
+the expected `-128/127` codes.
+
+The x86 feature contract now detects AVX-512F, BW, VL, and DQ separately.
+Every current AVX-512 route requires that complete instruction subset, and
+VNNI routes additionally require AVX-512 VNNI. This prevents forced or
+automatic dispatch from entering a translation unit whose exact instruction
+requirements are unavailable.
+
+Three focused one-thread passes used the checked `colibri_ops` INT8 case:
+
+| stage | INT8 M4x1024x1408 | decision |
+|---|---:|---|
+| pass 1, per-SIMD-block `-128` check in every dot | 0.1284 ms | reject; repeated checks slowed the common path |
+| pass 2, one scalar matrix pre-scan | 0.1121 ms | retain the one-scan structure for the next pass |
+| pass 3, one ISA-vectorized matrix pre-scan | 0.1237 ms in the exploratory run | retain; removes scalar pre-scan overhead and keeps the ordinary dot loop unchanged |
+
+A longer stable confirmation compared clean baseline and retained binaries
+with ten warmups, 60 samples, and a 5 ms minimum sample. Baseline measured
+0.121324 ms (CV 0.064, 95.07 GFLOP/s); the retained pass measured 0.112040 ms
+(CV 0.0394, 102.95 GFLOP/s). Both were exact against the scalar integer-dot
+oracle. The 7.65% observed difference is recorded as no measured regression,
+not as a general speedup claim, because frequency and scheduling were left at
+OS defaults.
+
+Correctness evidence:
+
+- Apple AArch64 Release: 55/55 tests pass, including live sibling parity.
+- Portable AppleClang ASan/UBSan: 50/50 tests pass with ISA variants disabled.
+- Intel Sapphire Rapids Release: 57/57 locally executable tests pass; forced
+  GGUF AVX2/AVX-512, INT8 AVX2/VNNI, W8A32 AVX2/AVX-512, and W4A8 AVX2/VNNI
+  routes all pass.
+- INT8 tests draw from the full byte domain and force a `-128 * -1` lane;
+  quantization tests cover the finite FP32 extrema; LM-head status tests also
+  prove oversized allocation requests return `kInvalidShape` rather than
+  throwing a C++ exception across the public boundary.
+- All 34 public entrypoint names that lacked a direct test reference in the
+  review inventory now have focused calls and result comparisons. This covers
+  FP32 wrappers, typed-storage wrappers, projection fusions, compressed-cache
+  attention, BaseQ, GDN, SSM backward, and vision/audio auxiliaries.
+
+- Hardware/toolchain: Intel Xeon Gold 6454S (Sapphire Rapids), GCC 15.2.0,
+  Linux 7.0.0-28 x86-64 Release without LTO.
+- Command: `quixicore_cpu_bench --preset quick --kernel colibri_ops --warmup
+  10 --iters 60 --min-sample-ms 5 --threads 1`.
+- Raw results: `perf/results/2026-07-25/review-int8-baseline/` and
+  `perf/results/2026-07-25/review-int8-pass3/`.
+- Decision: keep pass 3, the full-domain tests, exact AVX-512 predicates, and
+  the public-boundary allocation/status hardening.
+
 ## 2026-07-24: Sapphire Rapids AVX-512/VNNI dispatch closure
 
 Status: retain automatic AVX-512 for row-scaled W8A32 and AVX-512 VNNI for
@@ -3084,9 +3141,10 @@ Current implementation: `kernels/quantization/qgemv_dotprod.cpp`
 (`vmlaq_n_f32`), two independent vector accumulators per row, scalar tail
 for odd block counts. Compiled with `-march=armv8.2-a+dotprod` via
 `quixicore_cpu_add_isa_sources()`; baseline build untouched.
-Current public route: `quixicore_cpu::quant_gemv` dispatch resolves
-`dotprod` when `cpu_features().dotprod` is true, else `ref`;
-`QUIXICORE_CPU_QGEMV_VARIANT` still forces either.
+Historical public route at the time of this run: `quant_gemv` selected this
+activation-quantizing experiment. The current contract-preserving weight-only
+`qgemv` route selects `neon` or `ref`; this kernel now routes through
+`qgemv_w8a8`, with `QUIXICORE_CPU_QGEMV_W8A8_VARIANT` as its override.
 References inspected: llama.cpp `ggml_vec_dot_q8_0_q8_0` NEON structure
 (activation quantization + sdot + per-block scale fmla).
 Correctness: `test_quant_gemv` extended — public entry bit-exact vs the
@@ -3320,5 +3378,5 @@ measured. To close the perf gate in the maintainer env (Apple Clang 21):
     ctest --test-dir build -R 'qgemv_w8a8'   # incl. qgemv_w8a8_forced_dotprod
     scripts/bench --preset quick             # q4_0 w8a8 dotprod vs ref/scalar
 
-Follow-up: AVX2/VNNI x86 variant of the same q4_0 w8a8 dot (QuixiCore-CPU still
-has no x86 SIMD in the quant family).
+Follow-up: an AVX2/VNNI x86 variant of this specific q4_0 W8A8 dot remains
+open. Other quant families now have measured x86 AVX2/AVX-512/VNNI routes.

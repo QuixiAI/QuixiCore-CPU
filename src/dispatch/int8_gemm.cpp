@@ -30,7 +30,10 @@ constexpr Variant kVariants[] = {
 #endif
 #if defined(QUIXICORE_CPU_HAVE_INT8_GEMM_AVX512_VNNI)
     {"avx512_vnni", &quant::int8_gemm_avx512_vnni_kernel,
-     [](const CpuFeatures& features) { return features.avx512_vnni; }},
+     [](const CpuFeatures& features) {
+       return features.avx512f && features.avx512bw && features.avx512vl &&
+              features.avx512dq && features.avx512_vnni;
+     }},
 #endif
 #if defined(QUIXICORE_CPU_HAVE_INT8_GEMM_I8MM)
     {"i8mm", &quant::int8_gemm_i8mm_kernel,

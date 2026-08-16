@@ -148,31 +148,25 @@ the complete case registry and CLI.
 Create a clean Release build:
 
 ```sh
-cmake -S . -B build-perf \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DQUIXICORE_CPU_BUILD_TESTS=ON \
-  -DQUIXICORE_CPU_BUILD_BENCHMARKS=ON
-cmake --build build-perf --config Release
-ctest --test-dir build-perf --build-config Release --output-on-failure
-QUIXICORE_CPU_BUILD_DIR="$PWD/build-perf" scripts/bench --list
+cmake --preset perf
+cmake --build --preset perf
+ctest --preset perf
+scripts/bench --list
 ```
 
 On a multi-config generator, the executable is normally under
-`build-perf/Release/`; `scripts/bench` handles that layout. Always preserve the
+`build/perf/Release/`; `scripts/bench` handles that layout. Always preserve the
 configure command and relevant cache/compiler flags with the run evidence.
 
 Typical runs:
 
 ```sh
-QUIXICORE_CPU_BUILD_DIR="$PWD/build-perf" \
-  scripts/bench --preset smoke --kernel all --threads 1
+scripts/bench --preset smoke --kernel all --threads 1
 
-QUIXICORE_CPU_BUILD_DIR="$PWD/build-perf" \
-  scripts/bench --preset quick --kernel qgemv,rms_norm --threads 1 \
+scripts/bench --preset quick --kernel qgemv,rms_norm --threads 1 \
   --warmup 5 --iters 30 --min-sample-ms 5
 
-QUIXICORE_CPU_BUILD_DIR="$PWD/build-perf" \
-  scripts/bench --preset comprehensive --kernel qgemv --threads 8 \
+scripts/bench --preset comprehensive --kernel qgemv --threads 8 \
   --warmup 5 --iters 30 --min-sample-ms 5
 ```
 
@@ -454,11 +448,11 @@ mkdir -p "$PERF_OUT"
 
 perf stat -o "$PERF_OUT/perf-stat.txt" \
   -e cycles,instructions,branches,branch-misses,cache-references,cache-misses \
-  ./build-perf/quixicore_cpu_bench --preset quick --kernel qgemv --threads 1 \
+  ./build/perf/quixicore_cpu_bench --preset quick --kernel qgemv --threads 1 \
   --out-dir "$PERF_OUT/harness-stat"
 
 perf record -o "$PERF_OUT/perf.data" -g --call-graph dwarf -- \
-  ./build-perf/quixicore_cpu_bench --preset quick --kernel qgemv --threads 1 \
+  ./build/perf/quixicore_cpu_bench --preset quick --kernel qgemv --threads 1 \
   --out-dir "$PERF_OUT/harness-record"
 perf report -i "$PERF_OUT/perf.data"
 ```
@@ -873,11 +867,10 @@ command, machine, and a concise finding.
 Run the focused test and benchmark first:
 
 ```sh
-ctest --test-dir build-perf --build-config Release \
+ctest --preset perf \
   -R 'qgemv|qgemv_w8a8' --output-on-failure
 
-QUIXICORE_CPU_BUILD_DIR="$PWD/build-perf" \
-  scripts/bench --preset comprehensive --kernel qgemv \
+scripts/bench --preset comprehensive --kernel qgemv \
   --threads 1 --warmup 5 --iters 30 --min-sample-ms 5
 ```
 
@@ -886,7 +879,7 @@ Replace the example test, case, and thread count with the route being landed.
 Then run the full Release suite:
 
 ```sh
-ctest --test-dir build-perf --build-config Release --output-on-failure
+ctest --preset perf
 ```
 
 For a new ISA or dispatch route, additionally verify:
@@ -924,11 +917,9 @@ For a portable-only fallback audit, use a fresh build directory (or rely on the
 forced cache reset) and disable every optional ISA source explicitly:
 
 ```sh
-cmake -S . -B build-portable \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DQUIXICORE_CPU_ENABLE_ISA_VARIANTS=OFF
-cmake --build build-portable -j
-ctest --test-dir build-portable --output-on-failure
+cmake --preset portable-perf
+cmake --build --preset portable-perf
+ctest --preset portable-perf
 ```
 
 Record this separately from a forced runtime `ref` route: the portable-only

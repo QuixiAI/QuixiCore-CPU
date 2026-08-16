@@ -3,6 +3,7 @@
 #include "quixicore_cpu/qgemv.h"
 #include "quixicore_cpu/quantization.h"
 
+#include <climits>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -215,6 +216,11 @@ int main() {
                         Status::kOk &&
                     sampled == 2,
                 "dense LM-head sampling");
+  ok &= require(lm_head_sample(
+                    dense_hidden, dense_weights, nullptr, &sampled, 1,
+                    LLONG_MAX, 1, LmHeadSampling::kArgmax, 1, 0.0f, 1.0f,
+                    0) == Status::kInvalidShape,
+                "dense LM-head allocation overflow returns status");
   const std::uint8_t allow_mask[] = {0xC0};
   int masked_token = -1;
   float masked_logp = 0;
@@ -348,6 +354,28 @@ int main() {
                         Status::kOk &&
                     close_array(decode_linear_out, decode_linear_expected, 2),
                 "decode linear route");
+  const float linear_residual[] = {0.25f, -0.75f};
+  float decode_residual_out[2], decode_residual_expected[2];
+  ok &= require(decode_linear_residual(
+                        flux_x, decode_weight, flux_bias, linear_residual,
+                        decode_residual_out, 1, 2, 2) == Status::kOk &&
+                    linear_epilogue(
+                        flux_x, decode_weight, flux_bias, linear_residual,
+                        decode_residual_expected, 1, 2, 2) == Status::kOk &&
+                    close_array(decode_residual_out, decode_residual_expected,
+                                2),
+                "decode linear residual route");
+  const float flux_gate_values[] = {0.5f, 2.0f};
+  float flux_gate_out[2], flux_gate_expected[2];
+  ok &= require(flux_gate(flux_x, flux_w, flux_bias, flux_gate_values,
+                          linear_residual, flux_gate_out, 1, 2, 2) ==
+                        Status::kOk &&
+                    gemm_gate_residual(
+                        flux_x, flux_w, flux_bias, flux_gate_values,
+                        linear_residual, flux_gate_expected, 1, 2, 2) ==
+                        Status::kOk &&
+                    close_array(flux_gate_out, flux_gate_expected, 2),
+                "Flux gate route");
 
   std::vector<float> qflux_weights(kQuantDim, 0.0f);
   std::vector<float> qflux_input(kQuantDim, 0.0f);
@@ -395,6 +423,22 @@ int main() {
                             kStaticScale,
                         norm_reference[i], 0.08f),
                   "static FP8 norm quant value");
+  }
+  const float norm_bias[] = {0.25f, -0.25f, 0.5f, -0.5f};
+  ok &= require(layer_norm_add_quant_float8_static(
+                        norm_x, norm_residual, norm_weight, norm_bias,
+                        norm_codes, norm_residual_out, 1, 4, kStaticScale) ==
+                        Status::kOk &&
+                    layer_norm_add(norm_x, norm_residual, norm_weight,
+                                   norm_bias, norm_reference,
+                                   norm_residual_out, 1, 4) == Status::kOk,
+                "static FP8 layer norm quantization");
+  for (int i = 0; i < 4; ++i) {
+    ok &= require(close(float8_decode(norm_codes[i],
+                                     Float8Format::kE4M3FN) *
+                            kStaticScale,
+                        norm_reference[i], 0.08f),
+                  "static FP8 layer norm quant value");
   }
 
   std::vector<float> ternary(kQuantDim, 1.0f);

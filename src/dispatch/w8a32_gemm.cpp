@@ -29,7 +29,10 @@ constexpr Variant kVariants[] = {
 #endif
 #if defined(QUIXICORE_CPU_HAVE_W8A32_AVX512)
     {"avx512", &quant::w8a32_gemm_avx512,
-     [](const CpuFeatures& features) { return features.avx512f; }},
+     [](const CpuFeatures& features) {
+       return features.avx512f && features.avx512bw && features.avx512vl &&
+              features.avx512dq;
+     }},
 #endif
 };
 

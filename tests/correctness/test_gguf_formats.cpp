@@ -127,7 +127,8 @@ int main() {
         std::strcmp(forced, "ref") == 0 ||
         std::strcmp(forced, "blocked_ref") == 0 ||
         (std::strcmp(forced, "avx2") == 0 && features.avx2) ||
-        (std::strcmp(forced, "avx512") == 0 && features.avx512f);
+        (std::strcmp(forced, "avx512") == 0 && features.avx512f &&
+         features.avx512bw && features.avx512vl && features.avx512dq);
     if (available) {
       REQUIRE(std::string(qgemv_variant(fixtures[0].format)) == forced);
     }

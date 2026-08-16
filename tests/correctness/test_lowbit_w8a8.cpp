@@ -93,7 +93,9 @@ int main() {
         (std::strcmp(forced, "avx2") == 0 && features.avx2) ||
         (std::strcmp(forced, "dotprod") == 0 && features.dotprod) ||
         (std::strcmp(forced, "i8mm") == 0 && features.i8mm) ||
-        (std::strcmp(forced, "avx512_vnni") == 0 && features.avx512_vnni);
+        (std::strcmp(forced, "avx512_vnni") == 0 && features.avx512f &&
+         features.avx512bw && features.avx512vl && features.avx512dq &&
+         features.avx512_vnni);
     if (available &&
         std::strcmp(quixicore_cpu::lowbit_gemm_w8a8_variant(), forced) != 0) {
       std::cerr << "FAIL: requested low-bit W4A8 route " << forced

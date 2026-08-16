@@ -1,5 +1,7 @@
 #include <cstdlib>
 #include <cstring>
+#include <new>
+#include <stdexcept>
 #include <vector>
 
 #include "kernels/common/validation.h"
@@ -33,7 +35,10 @@ constexpr Variant kVariants[] = {
 #endif
 #if defined(QUIXICORE_CPU_HAVE_LOWBIT_W8A8_AVX512_VNNI)
     {"avx512_vnni", &quant::lowbit_w8a8_avx512_vnni,
-     [](const CpuFeatures& features) { return features.avx512_vnni; }},
+     [](const CpuFeatures& features) {
+       return features.avx512f && features.avx512bw && features.avx512vl &&
+              features.avx512dq && features.avx512_vnni;
+     }},
 #endif
 };
 
@@ -76,8 +81,14 @@ Status lowbit_gemm_w8a8(const std::uint8_t* packed_weights,
   (void)scales;
   thread_local std::vector<std::int8_t> quantized;
   thread_local std::vector<float> activation_scales;
-  quantized.resize(static_cast<std::size_t>(m * k));
-  activation_scales.resize(static_cast<std::size_t>(m));
+  try {
+    quantized.resize(static_cast<std::size_t>(m * k));
+    activation_scales.resize(static_cast<std::size_t>(m));
+  } catch (const std::bad_alloc&) {
+    return Status::kOutOfMemory;
+  } catch (const std::length_error&) {
+    return Status::kInvalidShape;
+  }
   status =
       quantize_int8(x, quantized.data(), activation_scales.data(), m, k, k);
   if (status != Status::kOk) return status;

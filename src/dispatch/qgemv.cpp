@@ -62,7 +62,11 @@ constexpr GgufVariant kGgufVariants[] = {
     // route for most formats; promote it only after dedicated AVX-512 block
     // decoders demonstrate a measured win.
     {"avx512", &quant::gguf_gemv_avx512,
-     [](const CpuFeatures& features) { return features.avx512f; }, false},
+     [](const CpuFeatures& features) {
+       return features.avx512f && features.avx512bw && features.avx512vl &&
+              features.avx512dq;
+     },
+     false},
 #endif
 };
 
@@ -251,9 +255,15 @@ Status qgemv_pack_weighted(QuantFormat format, const float* weights,
         elements > std::numeric_limits<size_t>::max() / sizeof(float)) {
       return Status::kInvalidShape;
     }
-    auto scratch = std::make_unique<float[]>(elements);
-    return tq2_0_pack(weights, static_cast<std::uint8_t*>(packed),
-                      scratch.get(), n, k);
+    try {
+      auto scratch = std::make_unique<float[]>(elements);
+      return tq2_0_pack(weights, static_cast<std::uint8_t*>(packed),
+                        scratch.get(), n, k);
+    } catch (const std::bad_alloc&) {
+      return Status::kOutOfMemory;
+    } catch (const std::length_error&) {
+      return Status::kInvalidShape;
+    }
   }
   const bool packed_ok =
       format == QuantFormat::kQ8_0

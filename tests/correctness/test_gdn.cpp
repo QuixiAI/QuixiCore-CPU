@@ -423,6 +423,19 @@ bool test_helpers_for_type(FloatStorageType type) {
                     value_heads, value_dim) == Status::kOk,
                 "typed gdn gated norm status");
   norm_out = decode_output(norm_out, norm_bits, type);
+  if (type == FloatStorageType::kF32) {
+    std::vector<float> direct(value_count);
+    ok &= require(quixicore_cpu::gdn_gated_rmsnorm(
+                      y_typed.f32.data(), z_typed.f32.data(),
+                      weight_typed.f32.data(), direct.data(), tokens,
+                      value_heads, value_dim) == Status::kOk,
+                  "direct FP32 gdn gated norm status");
+    for (long long index = 0; index < value_count; ++index) {
+      ok &= require(close(direct[static_cast<std::size_t>(index)],
+                          norm_out[static_cast<std::size_t>(index)]),
+                    "direct FP32 gdn gated norm oracle");
+    }
+  }
   for (long long row = 0; row < tokens * value_heads; ++row) {
     float sum = 0.0f;
     for (long long dim = 0; dim < value_dim; ++dim) {

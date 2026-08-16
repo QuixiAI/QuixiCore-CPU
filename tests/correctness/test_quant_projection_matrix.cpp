@@ -272,6 +272,14 @@ bool test_weight_only_matrix() {
                                                actual.data()) == Status::kOk);
         for (std::size_t index = 0; index < actual.size(); ++index)
           REQUIRE(close(actual[index], expected[index]));
+        std::fill(actual.begin(), actual.end(), 0.0f);
+        REQUIRE(quixicore_cpu::qgemv_prepacked_storage(
+                    prepared,
+                    {source.data(), FloatStorageType::kF32, k},
+                    {actual.data(), FloatStorageType::kF32, n}) ==
+                Status::kOk);
+        for (std::size_t index = 0; index < actual.size(); ++index)
+          REQUIRE(close(actual[index], expected[index]));
       }
     }
   }
@@ -336,6 +344,25 @@ bool test_gate_up_matrix() {
         for (std::size_t index = 0; index < swiglu.size(); ++index) {
           const float silu = gate[index] / (1.0f + std::exp(-gate[index]));
           REQUIRE(close(swiglu[index], silu * up[index], 2e-4f));
+        }
+        if (m == 1) {
+          std::vector<float> gemv_gate(gate.size());
+          std::vector<float> gemv_up(up.size());
+          std::vector<float> gemv_swiglu(swiglu.size());
+          REQUIRE(quixicore_cpu::qgemv_prepacked_gate_up_storage(
+                      gate_prepared, up_prepared, {input, input_type, k},
+                      {gemv_gate.data(), FloatStorageType::kF32, n},
+                      {gemv_up.data(), FloatStorageType::kF32, n}) ==
+                  Status::kOk);
+          REQUIRE(quixicore_cpu::qgemv_prepacked_swiglu_storage(
+                      gate_prepared, up_prepared, {input, input_type, k},
+                      {gemv_swiglu.data(), FloatStorageType::kF32, n}) ==
+                  Status::kOk);
+          for (std::size_t index = 0; index < gate.size(); ++index) {
+            REQUIRE(close(gemv_gate[index], gate[index]));
+            REQUIRE(close(gemv_up[index], up[index]));
+            REQUIRE(close(gemv_swiglu[index], swiglu[index], 2e-4f));
+          }
         }
         if (input_type != FloatStorageType::kF32) {
           std::vector<std::uint16_t> gate_typed(gate.size());

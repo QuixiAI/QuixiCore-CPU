@@ -111,6 +111,14 @@ bool test_aux(FloatStorageType type) {
                 "calibration status");
   ok &= close({maximum, maximum + 4}, {6.0f, 7.0f, 8.0f, 9.0f},
               FloatStorageType::kF32, "calibration oracle");
+  if (type == FloatStorageType::kF32) {
+    float direct[4] = {};
+    ok &= require(quixicore_cpu::calibration_absmax(
+                      x.f32.data(), running, direct, 3, 4) == Status::kOk,
+                  "direct FP32 calibration status");
+    ok &= close({direct, direct + 4}, {maximum, maximum + 4}, type,
+                "direct FP32 calibration oracle");
+  }
   const Buffer nonfinite = Buffer::input(
       {std::numeric_limits<float>::quiet_NaN(), 1.0f,
        std::numeric_limits<float>::infinity(), 2.0f, 3.0f,
@@ -187,6 +195,16 @@ bool test_embedding(FloatStorageType type) {
     }
   }
   ok &= close(out.decoded(), expected, type, "embedding types oracle");
+  if (type == FloatStorageType::kF32) {
+    std::vector<float> direct(expected.size());
+    ok &= require(quixicore_cpu::embedding_lookup_types(
+                      token_ids, type_ids, token_table.f32.data(),
+                      type_table.f32.data(), direct.data(), token_vocab,
+                      type_vocab, count, dim, 1.25f) == Status::kOk,
+                  "direct FP32 embedding types status");
+    ok &= close(direct, expected, type,
+                "direct FP32 embedding types oracle");
+  }
 
   const long long batch = 2, sequence = 4, hidden = 5;
   std::vector<float> values(batch * sequence * hidden), weights(hidden);
@@ -225,6 +243,15 @@ bool test_embedding(FloatStorageType type) {
         static_cast<float>(pooled_expected[feature] * inverse_l2);
   }
   ok &= close(pooled.decoded(), pooled_expected, type, "masked pool oracle");
+  if (type == FloatStorageType::kF32) {
+    std::vector<float> direct(pooled_expected.size());
+    ok &= require(quixicore_cpu::masked_mean_pool_rms_l2(
+                      x.f32.data(), mask, weight.f32.data(), direct.data(),
+                      batch, sequence, hidden, 1.0e-6f) == Status::kOk,
+                  "direct FP32 masked pool status");
+    ok &= close(direct, pooled_expected, type,
+                "direct FP32 masked pool oracle");
+  }
   return ok;
 }
 
@@ -289,6 +316,17 @@ bool test_vision(FloatStorageType type) {
   }
   ok &= close(projection.decoded(), projection_expected, type,
               "patch projection oracle");
+  if (type == FloatStorageType::kF32) {
+    std::vector<float> direct(projection_expected.size());
+    ok &= require(quixicore_cpu::vision_patch_projection(
+                      input.f32.data(), projection_weight.f32.data(),
+                      projection_bias_buffer.f32.data(), direct.data(), batch,
+                      height, width, channels, output_channels, 2, 2, 1, 1) ==
+                      Status::kOk,
+                  "direct FP32 patch projection status");
+    ok &= close(direct, projection_expected, type,
+                "direct FP32 patch projection oracle");
+  }
 
   constexpr long long volume_frames = 3;
   constexpr long long volume_height = 3;
@@ -389,6 +427,19 @@ bool test_vision(FloatStorageType type) {
   }
   ok &= close(volume_projection.decoded(), volume_projection_expected, type,
               "3d patch projection oracle");
+  if (type == FloatStorageType::kF32) {
+    std::vector<float> direct(volume_projection_expected.size());
+    ok &= require(quixicore_cpu::vision_patch_projection_3d(
+                      volume.f32.data(), volume_weight.f32.data(),
+                      volume_bias_buffer.f32.data(), direct.data(), 1,
+                      volume_frames, volume_height, volume_width,
+                      volume_channels, volume_output_channels, volume_kernel_t,
+                      volume_kernel_h, volume_kernel_w, 1, 1, 2, 1, 0, 0) ==
+                      Status::kOk,
+                  "direct FP32 3d patch projection status");
+    ok &= close(direct, volume_projection_expected, type,
+                "direct FP32 3d patch projection oracle");
+  }
 
   Buffer resized = Buffer::output(5 * 2 * channels, type);
   ok &= require(quixicore_cpu::interpolate_position_2d_storage(
@@ -417,6 +468,15 @@ bool test_vision(FloatStorageType type) {
     }
   }
   ok &= close(resized.decoded(), resize_expected, type, "resize oracle");
+  if (type == FloatStorageType::kF32) {
+    std::vector<float> direct(resize_expected.size());
+    ok &= require(quixicore_cpu::interpolate_position_2d(
+                      input.f32.data(), direct.data(), height, width, 5, 2,
+                      channels, false) == Status::kOk,
+                  "direct FP32 position interpolation status");
+    ok &= close(direct, resize_expected, type,
+                "direct FP32 position interpolation oracle");
+  }
 
   Buffer aligned = Buffer::output(5 * 2 * channels, type);
   ok &= require(quixicore_cpu::interpolate_position_2d_storage(
@@ -470,6 +530,15 @@ bool test_vision(FloatStorageType type) {
     }
   }
   ok &= close(pooled.decoded(), pool_expected, type, "average pool oracle");
+  if (type == FloatStorageType::kF32) {
+    std::vector<float> direct(pool_expected.size());
+    ok &= require(quixicore_cpu::avg_pool2d_tokens(
+                      input.f32.data(), direct.data(), batch, height, width,
+                      channels, 2, 2, 2, 2, true) == Status::kOk,
+                  "direct FP32 average pool status");
+    ok &= close(direct, pool_expected, type,
+                "direct FP32 average pool oracle");
+  }
 
   constexpr long long position_batch = 2;
   constexpr long long position_tokens = 4;
@@ -509,6 +578,17 @@ bool test_vision(FloatStorageType type) {
   }
   ok &= close(factorized.decoded(), factorized_expected, type,
               "factorized position oracle");
+  if (type == FloatStorageType::kF32) {
+    std::vector<float> direct(factorized_expected.size());
+    ok &= require(quixicore_cpu::factorized_position_2d(
+                      position_ids, position_table_buffer.f32.data(),
+                      position_valid, direct.data(), position_batch,
+                      position_tokens, max_position, position_dim) ==
+                      Status::kOk,
+                  "direct FP32 factorized position status");
+    ok &= close(direct, factorized_expected, type,
+                "direct FP32 factorized position oracle");
+  }
 
   constexpr long long pool_tokens = 6;
   constexpr long long pool_dim = 5;
@@ -548,6 +628,20 @@ bool test_vision(FloatStorageType type) {
   ok &= require(std::equal(position_pool_mask, position_pool_mask + 4,
                            position_pool_mask_expected),
                 "position pool mask oracle");
+  if (type == FloatStorageType::kF32) {
+    std::vector<float> direct(position_pool_expected.size());
+    int direct_mask[4] = {};
+    ok &= require(quixicore_cpu::pool_tokens_by_position(
+                      pool_input.f32.data(), pool_positions, pool_valid,
+                      direct.data(), direct_mask, 1, pool_tokens, pool_dim, 4,
+                      2, 4) == Status::kOk,
+                  "direct FP32 position pool status");
+    ok &= close(direct, position_pool_expected, type,
+                "direct FP32 position pool oracle");
+    ok &= require(std::equal(direct_mask, direct_mask + 4,
+                             position_pool_mask_expected),
+                  "direct FP32 position pool mask oracle");
+  }
 
   constexpr long long rope_heads = 2;
   constexpr long long rope_tokens = 3;
@@ -603,6 +697,17 @@ bool test_vision(FloatStorageType type) {
   }
   ok &= close(rope_output.decoded(), rope_expected, type,
               "vision rope oracle");
+  if (type == FloatStorageType::kF32) {
+    std::vector<float> direct(rope_expected.size());
+    ok &= require(quixicore_cpu::vision_rope_2d(
+                      rope_input.f32.data(), rope_cosine.f32.data(),
+                      rope_sine.f32.data(), rope_ids, direct.data(), 1,
+                      rope_heads, rope_tokens, rope_dim, rope_positions) ==
+                      Status::kOk,
+                  "direct FP32 vision rope status");
+    ok &= close(direct, rope_expected, type,
+                "direct FP32 vision rope oracle");
+  }
 
   Buffer qwen_rope_output = Buffer::output(rope_x.size(), type);
   ok &= require(quixicore_cpu::qwen_vision_rope_2d_storage(
@@ -643,6 +748,17 @@ bool test_vision(FloatStorageType type) {
   }
   ok &= close(qwen_rope_output.decoded(), qwen_rope_expected, type,
               "qwen vision rope oracle");
+  if (type == FloatStorageType::kF32) {
+    std::vector<float> direct(qwen_rope_expected.size());
+    ok &= require(quixicore_cpu::qwen_vision_rope_2d(
+                      rope_input.f32.data(), rope_cosine.f32.data(),
+                      rope_sine.f32.data(), rope_ids, direct.data(), 1,
+                      rope_heads, rope_tokens, rope_dim, rope_positions) ==
+                      Status::kOk,
+                  "direct FP32 Qwen vision rope status");
+    ok &= close(direct, qwen_rope_expected, type,
+                "direct FP32 Qwen vision rope oracle");
+  }
   return ok;
 }
 
@@ -750,6 +866,16 @@ bool test_audio(FloatStorageType type) {
   }
   ok &= close(dw_plain.decoded(), dw_expected, type,
               "audio depthwise plain oracle");
+  if (type == FloatStorageType::kF32) {
+    std::vector<float> direct(dw_expected.size());
+    ok &= require(quixicore_cpu::audio_depthwise_conv1d(
+                      dw_x.f32.data(), dw_w.f32.data(), dw_b.f32.data(),
+                      direct.data(), batch, length, channels, kernel, 1, 1, 1,
+                      false) == Status::kOk,
+                  "direct FP32 audio depthwise status");
+    ok &= close(direct, dw_expected, type,
+                "direct FP32 audio depthwise oracle");
+  }
 
   Buffer causal = Buffer::output(batch * length * channels, type);
   ok &= require(quixicore_cpu::audio_causal_depthwise_conv1d_storage(
@@ -776,6 +902,16 @@ bool test_audio(FloatStorageType type) {
   }
   ok &= close(causal.decoded(), causal_expected, type,
               "audio causal depthwise oracle");
+  if (type == FloatStorageType::kF32) {
+    std::vector<float> direct(causal_expected.size());
+    ok &= require(quixicore_cpu::audio_causal_depthwise_conv1d(
+                      dw_x.f32.data(), dw_w.f32.data(), dw_b.f32.data(),
+                      direct.data(), batch, length, channels, kernel, 2) ==
+                      Status::kOk,
+                  "direct FP32 audio causal depthwise status");
+    ok &= close(direct, causal_expected, type,
+                "direct FP32 audio causal depthwise oracle");
+  }
   return ok;
 }
 
@@ -854,6 +990,16 @@ bool test_cross_attention(FloatStorageType type) {
     }
   }
   ok &= close(output.decoded(), expected, type, "cross attention oracle");
+  if (type == FloatStorageType::kF32) {
+    std::vector<float> direct(q.size());
+    ok &= require(quixicore_cpu::cross_attention(
+                      tq.f32.data(), tk.f32.data(), tv.f32.data(), lengths,
+                      bias.data(), direct.data(), batch, query_heads, kv_heads,
+                      query_length, key_length, head_dim, 0.0f, 3.0f) ==
+                      Status::kOk,
+                  "direct FP32 cross attention status");
+    ok &= close(direct, expected, type, "direct FP32 cross attention oracle");
+  }
   return ok;
 }
 
@@ -954,6 +1100,17 @@ bool test_audio_relative_attention(FloatStorageType type) {
   }
   ok &= close(output.decoded(), expected, type,
               "audio relative attention oracle");
+  if (type == FloatStorageType::kF32) {
+    std::vector<float> direct(expected.size());
+    ok &= require(quixicore_cpu::audio_relative_attention(
+                      tq.f32.data(), tk.f32.data(), tv.f32.data(),
+                      tr.f32.data(), per_dim.data(), lengths, direct.data(),
+                      batch, length, heads, head_dim, relative_positions,
+                      chunk, left, right, 0.0f, 0.0f, 5.0f) == Status::kOk,
+                  "direct FP32 audio relative attention status");
+    ok &= close(direct, expected, type,
+                "direct FP32 audio relative attention oracle");
+  }
   return ok;
 }
 

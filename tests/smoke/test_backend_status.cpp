@@ -22,18 +22,17 @@ int main() {
   REQUIRE(metadata.repo == "QuixiAI/QuixiCore-CPU");
   REQUIRE(metadata.umbrella == "QuixiAI/QuixiCore");
   REQUIRE(metadata.contract == "v0.1");
-  REQUIRE(metadata.status == "experimental");
+  REQUIRE(metadata.status == "active");
   REQUIRE(metadata.targets.size() == 2);
 
   const auto supported = quixicore_cpu::supported_kernel_families();
-  REQUIRE(supported.empty());
-  REQUIRE(!quixicore_cpu::is_kernel_family_supported("quant_gemv"));
+  REQUIRE(supported.size() == 16);
+  REQUIRE(quixicore_cpu::is_kernel_family_supported("quant_gemv"));
+  REQUIRE(quixicore_cpu::is_kernel_family_supported("optimizers"));
+  REQUIRE(!quixicore_cpu::is_kernel_family_supported("not_a_family"));
 
   const auto planned = quixicore_cpu::planned_kernel_families();
-  REQUIRE(std::find(planned.begin(), planned.end(),
-                    std::string_view{"quant_gemv"}) != planned.end());
-  REQUIRE(std::find(planned.begin(), planned.end(),
-                    std::string_view{"quant_gemm"}) != planned.end());
+  REQUIRE(planned.empty());
 
   const auto features = quixicore_cpu::compile_time_feature_hints();
   REQUIRE(!features.empty());

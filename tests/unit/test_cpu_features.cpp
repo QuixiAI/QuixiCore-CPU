@@ -21,6 +21,9 @@ int main() {
   REQUIRE(features.neon);
   REQUIRE(!features.avx2);
   REQUIRE(!features.avx512f);
+  REQUIRE(!features.avx512bw);
+  REQUIRE(!features.avx512vl);
+  REQUIRE(!features.avx512dq);
   REQUIRE(!features.amx_tile);
   if (features.fp16) REQUIRE(features.neon);
 #endif
@@ -31,6 +34,9 @@ int main() {
   REQUIRE(!features.sme);
   REQUIRE(!features.fp16);
   if (features.avx512_vnni) {
+    REQUIRE(features.avx512f);
+  }
+  if (features.avx512bw || features.avx512vl || features.avx512dq) {
     REQUIRE(features.avx512f);
   }
   if (features.amx_int8 || features.amx_bf16) {

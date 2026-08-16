@@ -41,6 +41,27 @@ constexpr bool kFeatureAvx512f =
     false;
 #endif
 
+constexpr bool kFeatureAvx512Bw =
+#if defined(__AVX512BW__)
+    true;
+#else
+    false;
+#endif
+
+constexpr bool kFeatureAvx512Vl =
+#if defined(__AVX512VL__)
+    true;
+#else
+    false;
+#endif
+
+constexpr bool kFeatureAvx512Dq =
+#if defined(__AVX512DQ__)
+    true;
+#else
+    false;
+#endif
+
 constexpr bool kFeatureAvx512Vnni =
 #if defined(__AVX512VNNI__)
     true;
@@ -104,7 +125,7 @@ constexpr bool kFeatureSve =
     false;
 #endif
 
-constexpr std::array<std::string_view, 16> kPlannedKernelFamilies = {
+constexpr std::array<std::string_view, 16> kSupportedKernelFamilies = {
     "norms",
     "softmax",
     "activations",
@@ -132,17 +153,17 @@ BackendMetadata backend_metadata() {
       "QuixiAI/QuixiCore-CPU",
       "QuixiAI/QuixiCore",
       "v0.1",
-      "experimental",
+      "active",
       {"x86_64", "aarch64"},
       {"SIMD", "threading"},
   };
 }
 
-std::vector<std::string_view> supported_kernel_families() { return {}; }
-
-std::vector<std::string_view> planned_kernel_families() {
-  return {kPlannedKernelFamilies.begin(), kPlannedKernelFamilies.end()};
+std::vector<std::string_view> supported_kernel_families() {
+  return {kSupportedKernelFamilies.begin(), kSupportedKernelFamilies.end()};
 }
+
+std::vector<std::string_view> planned_kernel_families() { return {}; }
 
 std::vector<FeatureHint> compile_time_feature_hints() {
   return {
@@ -151,6 +172,9 @@ std::vector<FeatureHint> compile_time_feature_hints() {
       {"avx2", kFeatureAvx2, "compiler target macro"},
       {"f16c", kFeatureF16c, "compiler target macro"},
       {"avx512f", kFeatureAvx512f, "compiler target macro"},
+      {"avx512bw", kFeatureAvx512Bw, "compiler target macro"},
+      {"avx512vl", kFeatureAvx512Vl, "compiler target macro"},
+      {"avx512dq", kFeatureAvx512Dq, "compiler target macro"},
       {"avx512_vnni", kFeatureAvx512Vnni, "compiler target macro"},
       {"amx_tile", kFeatureAmxTile, "compiler target macro"},
       {"amx_int8", kFeatureAmxInt8, "compiler target macro"},

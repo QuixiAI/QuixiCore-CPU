@@ -1,0 +1,154 @@
+{
+  "version": 2,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXE_LINKER_FLAGS": "",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_MODULE_LINKER_FLAGS": "",
+        "CMAKE_SHARED_LINKER_FLAGS": "",
+        "QUIXICORE_CPU_BUILD_TESTS": "ON",
+        "QUIXICORE_CPU_BUILD_TOOLS": "ON"
+      }
+    },
+    {
+      "name": "dev",
+      "displayName": "Developer build",
+      "description": "RelWithDebInfo development build with tests and tools",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "QUIXICORE_CPU_BUILD_BENCHMARKS": "OFF"
+      }
+    },
+    {
+      "name": "test",
+      "displayName": "Correctness and CI build",
+      "description": "Release build used by correctness CI",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "QUIXICORE_CPU_BUILD_BENCHMARKS": "OFF"
+      }
+    },
+    {
+      "name": "perf",
+      "displayName": "Performance evidence build",
+      "description": "Release build with correctness tests and benchmark harness",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "QUIXICORE_CPU_BUILD_BENCHMARKS": "ON"
+      }
+    },
+    {
+      "name": "sanitize",
+      "displayName": "Sanitizer build",
+      "description": "Portable Debug build with ASan and UBSan",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "QUIXICORE_CPU_BUILD_BENCHMARKS": "OFF",
+        "QUIXICORE_CPU_ENABLE_ISA_VARIANTS": "OFF",
+        "QUIXICORE_CPU_ENABLE_SANITIZERS": "ON"
+      }
+    },
+    {
+      "name": "portable-perf",
+      "displayName": "Portable performance audit build",
+      "description": "Release benchmark build with optional ISA variants disabled",
+      "inherits": "perf",
+      "cacheVariables": {
+        "QUIXICORE_CPU_ENABLE_ISA_VARIANTS": "OFF"
+      }
+    },
+    {
+      "name": "macos-x86-test",
+      "displayName": "macOS x86_64 correctness build",
+      "description": "Release x86_64 build for Apple Silicon hosts with Rosetta",
+      "inherits": "test",
+      "cacheVariables": {
+        "CMAKE_OSX_ARCHITECTURES": "x86_64"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev"
+    },
+    {
+      "name": "test",
+      "configurePreset": "test"
+    },
+    {
+      "name": "perf",
+      "configurePreset": "perf"
+    },
+    {
+      "name": "sanitize",
+      "configurePreset": "sanitize"
+    },
+    {
+      "name": "portable-perf",
+      "configurePreset": "portable-perf"
+    },
+    {
+      "name": "macos-x86-test",
+      "configurePreset": "macos-x86-test"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "test",
+      "configurePreset": "test",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "perf",
+      "configurePreset": "perf",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "sanitize",
+      "configurePreset": "sanitize",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "portable-perf",
+      "configurePreset": "portable-perf",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "macos-x86-test",
+      "configurePreset": "macos-x86-test",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

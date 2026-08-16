@@ -473,6 +473,13 @@ int main() {
     REQUIRE(mamba2_backward(c, b, mx, mcl, gy, gc, gb, gx, gcl, 1, 1, 2, 1) ==
             Status::kOk);
     for (float value : gc) REQUIRE(std::isfinite(value));
+    float ssd_gc[2], ssd_gb[2], ssd_gx[2], ssd_gcl[2];
+    REQUIRE(ssd_chunked_backward(c, b, mx, mcl, gy, ssd_gc, ssd_gb, ssd_gx,
+                                 ssd_gcl, 1, 1, 2, 1) == Status::kOk);
+    REQUIRE(std::equal(gc, gc + 2, ssd_gc));
+    REQUIRE(std::equal(gb, gb + 2, ssd_gb));
+    REQUIRE(std::equal(gx, gx + 2, ssd_gx));
+    REQUIRE(std::equal(gcl, gcl + 2, ssd_gcl));
     const float old_state[] = {2};
     const float alpha[] = {0.5f};
     const float one[] = {3};

@@ -9,7 +9,7 @@ cannot be mistaken for dtype, ISA, or performance evidence.
 |---|---|---|
 | llama CPU operation semantics | 105 top-level ops, 22 unary modes, and six GLU modes mapped at pinned revision `2beefef68` | Re-audit when the pinned source revision changes |
 | llama quant lifecycle | 25 stored formats have pack, unpack, and f32 GEMV; Q8_1/Q8_K activation layouts are public | Per-format qgemm/activation-dot/ISA cells marked `reference` in `llama_quants.tsv` need optimized measured routes before any optimized-tier claim |
-| sibling operation manifests | All 110 operation-level entries published by the live Metal/XPU/ROCm manifests map to public CPU symbols | CUDA currently publishes family-level metadata only; exact CUDA operation drift cannot be proven until its manifest is expanded upstream |
+| sibling operation manifests | All 127 operation-level entries published by the live Metal/XPU/ROCm manifests map to public CPU symbols | CUDA currently publishes family-level metadata only; exact CUDA operation drift cannot be proven until its manifest is expanded upstream |
 | sibling quant manifests | All 31 published format-family entries map to CPU format/compute surfaces | Family mappings do not imply every storage-layout × operation × dtype product is optimized |
 | dtype surface | Every public floating tensor can use FP16 or BF16 storage through the generic typed adapter, with named activation/norm/GEMM/attention/quantized-projection routes; FP32 is zero-copy | Native half accumulation is intentionally not claimed; FP64 remains absent, and operation-specific native half compute requires separate contract demand and evidence |
 | aarch64 ISA performance | Native Apple AArch64 Release coverage and focused NEON/DotProd/I8MM measurements are recorded for the paths in `perf/` | Reference-only cells remain reference-only until a correctness-gated benchmark is recorded; no SVE/SME runtime claim is made |
@@ -24,4 +24,4 @@ Metal now publishes the LoRA and BaseRT auxiliary, embedding, 2-D/3-D vision,
 audio, position/RoPE, and cross/relative-attention operations that were
 initially excavated from its live source tree. Their CPU ports, focused
 correctness, and three-pass performance evidence are included in the enforced
-110-operation inventory.
+127-operation inventory.

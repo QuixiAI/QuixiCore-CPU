@@ -22,10 +22,19 @@ This is the QuixiCore CPU backend repository. The umbrella contract repository i
 - Pure documentation, metadata, and scaffolding changes may skip a kernel
   performance run, but they must not assert performance improvements.
 
+## Build Rules
+
+- Use the checked-in CMake presets or Makefile targets.
+- Keep every generated configuration under `build/<profile>/`.
+- Do not create top-level `build-*` or `cmake-build-*` directories. Add a
+  reusable preset for a lasting configuration, or use `build/scratch/` for a
+  temporary experiment and remove it afterward.
+- Build trees are disposable. Record durable correctness and performance
+  evidence under the documented test and `perf/` paths.
+
 ## Evidence Locations
 
 - Operating guide: `perf/perf.md`
 - Optimization notebook: `perf/optimization_status.md`
 - Baseline index: `perf/baseline_status.md`
 - Raw benchmark outputs: `perf/results/`
-

@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <new>
 #include <numeric>
+#include <stdexcept>
 #include <vector>
 
 #include "kernels/common/validation.h"
@@ -216,7 +218,7 @@ Status quantized_lm_head_sample(
     QuantFormat format, const void* packed_weights,
     const float* hidden_states, const float* bias, int* token_ids,
     long long rows, long long vocab, long long hidden, LmHeadSampling mode,
-    int k, float top_p, float temperature, std::uint32_t seed) {
+    int k, float top_p, float temperature, std::uint32_t seed) try {
   if (!detail::valid_product({rows, vocab, hidden})) {
     return Status::kInvalidShape;
   }
@@ -251,13 +253,17 @@ Status quantized_lm_head_sample(
                           temperature, seed);
   }
   return Status::kInvalidArgument;
+} catch (const std::bad_alloc&) {
+  return Status::kOutOfMemory;
+} catch (const std::length_error&) {
+  return Status::kInvalidShape;
 }
 
 Status lm_head_sample(const float* hidden_states, const float* weights,
                       const float* bias, int* token_ids, long long rows,
                       long long vocab, long long hidden, LmHeadSampling mode,
                       int k, float top_p, float temperature,
-                      std::uint32_t seed) {
+                      std::uint32_t seed) try {
   if (!detail::valid_product({rows, vocab, hidden})) {
     return Status::kInvalidShape;
   }
@@ -282,6 +288,10 @@ Status lm_head_sample(const float* hidden_states, const float* weights,
                           temperature, seed);
   }
   return Status::kInvalidArgument;
+} catch (const std::bad_alloc&) {
+  return Status::kOutOfMemory;
+} catch (const std::length_error&) {
+  return Status::kInvalidShape;
 }
 
 Status quantized_lm_head_masked_topk(
@@ -307,7 +317,7 @@ Status lm_head_masked_topk(
     const float* hidden_states, const float* weights, const float* bias,
     const std::uint8_t* allow_mask, int* token_ids, float* log_probabilities,
     long long rows, long long vocab, long long hidden, int top_k,
-    bool normalize_allowed) {
+    bool normalize_allowed) try {
   if (!detail::valid_product({rows, vocab, hidden}) || top_k <= 0 ||
       top_k > vocab) {
     return Status::kInvalidShape;
@@ -345,6 +355,10 @@ Status lm_head_masked_topk(
     }
   }
   return Status::kOk;
+} catch (const std::bad_alloc&) {
+  return Status::kOutOfMemory;
+} catch (const std::length_error&) {
+  return Status::kInvalidShape;
 }
 
 Status quantized_lm_head_candidates(
@@ -352,7 +366,7 @@ Status quantized_lm_head_candidates(
     const float* hidden_states, const float* bias, const int* candidate_ids,
     const long long* offsets, int* token_ids, float* log_probabilities,
     long long rows, long long vocab, long long hidden, long long candidates,
-    int top_k) {
+    int top_k) try {
   if (!detail::valid_product({rows, vocab, hidden}) || candidates < 0 ||
       top_k <= 0) {
     return Status::kInvalidShape;
@@ -404,13 +418,17 @@ Status quantized_lm_head_candidates(
     }
   }
   return Status::kOk;
+} catch (const std::bad_alloc&) {
+  return Status::kOutOfMemory;
+} catch (const std::length_error&) {
+  return Status::kInvalidShape;
 }
 
 Status lm_head_candidates(
     const float* hidden_states, const float* weights, const float* bias,
     const int* candidate_ids, const long long* offsets, int* token_ids,
     float* log_probabilities, long long rows, long long vocab,
-    long long hidden, long long candidates, int top_k) {
+    long long hidden, long long candidates, int top_k) try {
   if (!detail::valid_product({rows, vocab, hidden}) || candidates < 0 ||
       top_k <= 0) {
     return Status::kInvalidShape;
@@ -449,6 +467,10 @@ Status lm_head_candidates(
     }
   }
   return Status::kOk;
+} catch (const std::bad_alloc&) {
+  return Status::kOutOfMemory;
+} catch (const std::length_error&) {
+  return Status::kInvalidShape;
 }
 
 Status quantized_lm_head_beam_advance(
@@ -456,7 +478,7 @@ Status quantized_lm_head_beam_advance(
     const float* hidden_states, const float* bias,
     const float* cumulative_log_probabilities, int* next_token,
     int* parent_beam, float* next_cumulative, long long batch,
-    long long beam_width, long long vocab, long long hidden) {
+    long long beam_width, long long vocab, long long hidden) try {
   if (!detail::valid_product({batch, beam_width, vocab, hidden})) {
     return Status::kInvalidShape;
   }
@@ -474,6 +496,10 @@ Status quantized_lm_head_beam_advance(
   return beam_search_step(logits.data(), cumulative_log_probabilities,
                           next_token, parent_beam, next_cumulative, batch,
                           beam_width, vocab);
+} catch (const std::bad_alloc&) {
+  return Status::kOutOfMemory;
+} catch (const std::length_error&) {
+  return Status::kInvalidShape;
 }
 
 Status lm_head_constrained(const float* hidden_states, const float* weights,
@@ -481,7 +507,7 @@ Status lm_head_constrained(const float* hidden_states, const float* weights,
                            const int* previous_token, int* selected_token,
                            float* selected_log_probability, long long rows,
                            long long vocab, long long hidden, int eos_id,
-                           bool forbid_eos) {
+                           bool forbid_eos) try {
   if (!detail::valid_product({rows, vocab, hidden}) ||
       (eos_id < -1 || eos_id >= vocab)) {
     return Status::kInvalidShape;
@@ -516,6 +542,10 @@ Status lm_head_constrained(const float* hidden_states, const float* weights,
         static_cast<float>(logits[allowed[0]] - lse);
   }
   return Status::kOk;
+} catch (const std::bad_alloc&) {
+  return Status::kOutOfMemory;
+} catch (const std::length_error&) {
+  return Status::kInvalidShape;
 }
 
 }  // namespace quixicore_cpu

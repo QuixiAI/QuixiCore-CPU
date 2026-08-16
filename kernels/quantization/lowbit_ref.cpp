@@ -184,7 +184,8 @@ const Variant& lowbit_variant(LowBitFormat format) {
   static const Variant avx512{"avx512", &quant::lowbit_gemm_avx512};
   if ((format == LowBitFormat::kInt4Row ||
        format == LowBitFormat::kInt4Group) &&
-      cpu_features().avx512f) {
+      cpu_features().avx512f && cpu_features().avx512bw &&
+      cpu_features().avx512vl && cpu_features().avx512dq) {
     return avx512;
   }
 #endif

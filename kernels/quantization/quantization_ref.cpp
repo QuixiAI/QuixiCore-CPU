@@ -199,16 +199,26 @@ Status quantize_int8_asymmetric(const float* x, std::int8_t* codes,
     for (long long row = begin; row < end; ++row) {
       const float* input = x + row * dim;
       const auto bounds = std::minmax_element(input, input + dim);
-      const float range = *bounds.second - *bounds.first;
-      const float scale = range > 0.0f
-                              ? range / 255.0f
-                              : std::max(std::fabs(*bounds.first) / 127.0f, 1e-7f);
-      const int zero = rounded_int(-128.0f - *bounds.first / scale);
+      // Compute the affine interval in double precision. Two individually
+      // finite FP32 endpoints can have a difference larger than FLT_MAX.
+      const double minimum = static_cast<double>(*bounds.first);
+      const double maximum = static_cast<double>(*bounds.second);
+      const double range = maximum - minimum;
+      const double scale_value =
+          range > 0.0
+              ? range / 255.0
+              : std::max(std::fabs(minimum) / 127.0, 1e-7);
+      const float scale = static_cast<float>(scale_value);
+      const int zero =
+          static_cast<int>(std::nearbyint(-128.0 - minimum / scale_value));
       scales[row] = scale;
       zero_points[row] = zero;
       for (long long i = 0; i < dim; ++i) {
         codes[row * dim + i] = static_cast<std::int8_t>(
-            std::clamp(rounded_int(input[i] / scale) + zero, -128, 127));
+            std::clamp(static_cast<int>(std::nearbyint(
+                           static_cast<double>(input[i]) / scale_value)) +
+                           zero,
+                       -128, 127));
       }
     }
   });

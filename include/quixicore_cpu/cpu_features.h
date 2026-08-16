@@ -16,6 +16,9 @@ struct CpuFeatures {
   bool f16c = false;
   bool avx2 = false;
   bool avx512f = false;
+  bool avx512bw = false;
+  bool avx512vl = false;
+  bool avx512dq = false;
   bool avx512_vnni = false;
   bool amx_tile = false;
   bool amx_int8 = false;

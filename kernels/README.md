@@ -16,10 +16,15 @@ this tree owns only the CPU implementations.
 | `quantization/` | `quant_gemv`, `quant_gemm`, `quantized_lm_head` |
 | `sampling/` | `sampling`, `beam_search`, `speculative_decode` |
 | `moe/` | `moe_routing`, `grouped_moe_gemm` |
+| `ssm/` | `mamba_ssd` and extended state-space operations |
+| `optimizers/` | `optimizers` |
+| `matmul/` | Dense GEMM, LoRA, and auxiliary matrix operations |
+| `linear_attention/` | Recurrent, gated-delta, and linear-attention operations |
+| `audio/` | CPU audio convolution and relative-attention auxiliaries |
+| `vision/` | CPU patch, projection, pooling, convolution, and RoPE auxiliaries |
 | `serving/` | Embedding lookup, KV cache utilities |
-
-Directories for the remaining contract families (`mamba_ssd` under `ssm/`,
-`optimizers/`) are created when work on them starts.
+| `collectives/` | Single-process CPU collective semantics |
+| `utils/` | Tensor, storage-conversion, and general utility operations |
 
 ## Source File Convention
 

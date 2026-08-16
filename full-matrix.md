@@ -624,12 +624,9 @@ tensor, not to hide a disagreement with the exact-code oracle.
 Every work package ends with at least:
 
 ```sh
-cmake -S . -B build-release \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DQUIXICORE_CPU_BUILD_TESTS=ON \
-  -DQUIXICORE_CPU_BUILD_BENCHMARKS=ON
-cmake --build build-release --config Release
-ctest --test-dir build-release --build-config Release --output-on-failure
+cmake --preset perf
+cmake --build --preset perf
+ctest --preset perf
 ```
 
 Final phase validation additionally includes ASan/UBSan with float-cast overflow
@@ -1105,7 +1102,7 @@ blanket single-thread performance claim.
 - [x] Umbrella CPU registry and matrices match the backend evidence.
 
 M5 evidence: Apple AArch64 Release passes 55/55 tests, including the live
-sibling drift gate and the enforced 110-operation sibling inventory. Intel
+sibling drift gate and the enforced 127-operation sibling inventory. Intel
 Sapphire Rapids Release passes all 57 locally executable tests; parity is
 checked on the Apple workspace because the isolated x86 checkout does not
 contain sibling repositories. Eight forced-route tests prove exact GGUF

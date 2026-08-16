@@ -274,6 +274,17 @@ bool test_projection_and_storage() {
       for (std::size_t index = 0; index < output.size(); ++index)
         REQUIRE(close(output[index], expected[index]));
 
+      std::vector<float> gemv(static_cast<std::size_t>(fixture.rows));
+      REQUIRE(quixicore_cpu::base_q_gemv(
+                  fixture.view(),
+                  {input16.data(), input_type, fixture.columns},
+                  {gemv.data(), FloatStorageType::kF32, fixture.rows}) ==
+              Status::kOk);
+      for (long long row = 0; row < fixture.rows; ++row) {
+        REQUIRE(close(gemv[static_cast<std::size_t>(row)],
+                      expected[static_cast<std::size_t>(row)]));
+      }
+
       for (FloatStorageType output_type :
            {FloatStorageType::kF16, FloatStorageType::kBF16}) {
         std::vector<std::uint16_t> typed(expected.size());

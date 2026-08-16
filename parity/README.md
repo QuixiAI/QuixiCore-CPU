@@ -37,11 +37,13 @@ inventories add all 22 numerical unary modes and all six numerical GLU modes.
 No row is `missing`. The quant ledger separately prevents semantic coverage
 from being mistaken for an ISA performance tier.
 
-Run `scripts/check_parity_manifest.py` from the repository root. The check
-fails when a pinned checkout changes, llama adds or removes a CPU operation or
-nested unary/GLU mode, a sibling adds or removes an operation-level manifest
-entry or quant family, or a manifest row/status is malformed. A missing row is
-never silently treated as unsupported.
+Run `make parity` from a workspace containing the pinned sibling checkouts. The
+audit is intentionally separate from the portable `make test` suite because it
+depends on absolute source paths and exact external revisions. It fails when a
+pinned checkout changes, llama adds or removes a CPU operation or nested
+unary/GLU mode, a sibling adds or removes an operation-level manifest entry or
+quant family, or a manifest row/status is malformed. A missing row is never
+silently treated as unsupported.
 
 Status vocabulary:
 

@@ -66,15 +66,21 @@ threading, and packing design.
 ## Build
 
 ```sh
-cmake -S . -B build -DQUIXICORE_CPU_BUILD_TESTS=ON
-cmake --build build
-ctest --test-dir build --output-on-failure
+make             # configure and build build/dev/
+make test        # configure, build, and test build/test/
+make sanitize    # configure, build, and test build/sanitize/
+make perf        # configure, build, and test build/perf/
 ```
+
+The Makefile is a thin wrapper around the checked-in CMake presets. Direct
+CMake use is also supported, for example `cmake --preset dev` followed by
+`cmake --build --preset dev`. All configurations live under the single
+disposable `build/` artifact root; top-level `build-*` directories are rejected.
 
 Inspect the initialized backend metadata and compiler-target feature hints:
 
 ```sh
-./build/quixicore_cpu_info
+./build/dev/quixicore_cpu_info
 ```
 
 ## Evidence Policy

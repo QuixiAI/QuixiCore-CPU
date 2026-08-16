@@ -9,16 +9,15 @@ dependencies.
 ## Quick Start
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-./build/quixicore_cpu_bench --list
-./build/quixicore_cpu_bench --preset quick
+make perf
+./build/perf/quixicore_cpu_bench --list
+./build/perf/quixicore_cpu_bench --preset quick
 # or, from any directory:
 scripts/bench --preset quick
 ```
 
 Always benchmark a `Release` build. On Windows, run
-`build\Release\quixicore_cpu_bench.exe` directly.
+`build\perf\quixicore_cpu_bench.exe` directly.
 
 ## Command Line
 

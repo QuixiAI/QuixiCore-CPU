@@ -317,6 +317,17 @@ bool test_mxfp8(long long dim) {
             slots, key_cache.data(), value_cache.data(), kSlots, kTokens,
             kHeads, dim) == Status::kOk,
         "typed MXFP8 scatter");
+    if (input_type == FloatStorageType::kF32) {
+      std::vector<std::uint8_t> direct_key(key_cache.size());
+      std::vector<std::uint8_t> direct_value(value_cache.size());
+      ok &= require(quixicore_cpu::kv_cache_scatter_mxfp8(
+                        key.data(), value.data(), slots, direct_key.data(),
+                        direct_value.data(), kSlots, kTokens, kHeads, dim) ==
+                        Status::kOk,
+                    "direct FP32 MXFP8 scatter");
+      ok &= require(direct_key == key_cache && direct_value == value_cache,
+                    "direct FP32 MXFP8 scatter oracle");
+    }
     for (long long block = 0; block < kTokens * kHeads * groups; ++block) {
       ok &= require(key_cache[block * kBlockBytes] != 255 &&
                         value_cache[block * kBlockBytes] != 255,
@@ -413,6 +424,20 @@ bool test_mxfp8(long long dim) {
               block_table, context_lens, reference.data(), 2, 1, kQueryHeads,
               kHeads, dim, kPage, 2) == Status::kOk,
           "MXFP8 materialized attention oracle");
+      if (input_type == FloatStorageType::kF32 &&
+          query_type == FloatStorageType::kF32) {
+        std::vector<float> direct(query.size());
+        ok &= require(
+            quixicore_cpu::paged_attention_mxfp8(
+                query.data(), key_cache.data(), value_cache.data(), block_table,
+                context_lens, direct.data(), 2, 1, kQueryHeads, kHeads, dim,
+                kPage, 2) == Status::kOk,
+            "direct FP32 MXFP8 attention");
+        for (std::size_t i = 0; i < direct.size(); ++i) {
+          ok &= require(std::fabs(direct[i] - reference[i]) <= 3e-5f,
+                        "direct FP32 MXFP8 attention output");
+        }
+      }
       for (FloatStorageType output_type : types) {
         std::vector<float> output_f32;
         std::vector<std::uint16_t> output_16;
@@ -563,6 +588,17 @@ bool test_turboquant(long long dim, int key_bits, bool key_signed,
     ok &= require(transform_actual[i] == transform_expected[i],
                   "TurboQuant normalized signed FWHT");
   }
+  std::vector<float> transform_storage(transform_input.size());
+  ok &= require(quixicore_cpu::turboquant_query_transform_storage(
+                    FloatStorageInput{transform_input.data(),
+                                      FloatStorageType::kF32, dim},
+                    signs.data(),
+                    FloatStorageOutput{transform_storage.data(),
+                                       FloatStorageType::kF32, dim},
+                    1, 1, dim) == Status::kOk,
+                "FP32 storage TurboQuant query transform");
+  ok &= require(transform_storage == transform_expected,
+                "FP32 storage TurboQuant query transform oracle");
 
   if (typed_matrix) {
     const FloatStorageType types[] = {FloatStorageType::kF32,
@@ -1105,6 +1141,23 @@ bool test_q8_0_kv() {
         require(key_scales == expected_key_scales, "Q8_0 exact key scale bits");
     ok &= require(value_scales == expected_value_scales,
                   "Q8_0 exact value scale bits");
+    if (type == FloatStorageType::kF32) {
+      std::vector<std::int8_t> direct_key_codes(kCacheElements);
+      std::vector<std::int8_t> direct_value_codes(kCacheElements);
+      std::vector<std::uint16_t> direct_key_scales(kScaleElements);
+      std::vector<std::uint16_t> direct_value_scales(kScaleElements);
+      ok &= require(quixicore_cpu::kv_cache_scatter_q8_0(
+                        key.data(), value.data(), slots,
+                        direct_key_codes.data(), direct_key_scales.data(),
+                        direct_value_codes.data(), direct_value_scales.data(),
+                        kBlocks, kTokens, kHeads, kDim, kPage) == Status::kOk,
+                    "direct FP32 Q8_0 scatter");
+      ok &= require(direct_key_codes == key_codes &&
+                        direct_value_codes == value_codes &&
+                        direct_key_scales == key_scales &&
+                        direct_value_scales == value_scales,
+                    "direct FP32 Q8_0 scatter oracle");
+    }
 
     const int block_table[] = {0, 1, -1};
     const int cumulative[] = {0, 12};
@@ -1115,6 +1168,23 @@ bool test_q8_0_kv() {
                       key_out.data(), value_out.data(), kBlocks, 12, 1, kHeads,
                       kDim, kPage, 3) == Status::kOk,
                   "Q8_0 gather");
+    std::vector<float> storage_key_out(key_out.size());
+    std::vector<float> storage_value_out(value_out.size());
+    ok &= require(quixicore_cpu::kv_cache_gather_q8_0_storage(
+                      key_codes.data(), key_scales.data(), value_codes.data(),
+                      value_scales.data(), block_table, cumulative,
+                      FloatStorageOutput{storage_key_out.data(),
+                                         FloatStorageType::kF32,
+                                         static_cast<long long>(
+                                             storage_key_out.size())},
+                      FloatStorageOutput{storage_value_out.data(),
+                                         FloatStorageType::kF32,
+                                         static_cast<long long>(
+                                             storage_value_out.size())},
+                      kBlocks, 12, 1, kHeads, kDim, kPage, 3) == Status::kOk,
+                  "Q8_0 FP32 storage gather");
+    ok &= require(storage_key_out == key_out && storage_value_out == value_out,
+                  "Q8_0 FP32 storage gather oracle");
     for (long long token = 0; token < 12; ++token) {
       const int block = block_table[token / kPage];
       for (long long head = 0; head < kHeads; ++head) {
@@ -1224,6 +1294,24 @@ bool test_q8_0_kv() {
       ok &=
           require(std::fabs(attention_out[i] - attention_reference[i]) <= 2e-5f,
                   "Q8_0 paged attention oracle");
+    }
+    std::vector<float> storage_attention(attention_out.size());
+    ok &= require(quixicore_cpu::paged_attention_q8_0_storage(
+                      FloatStorageInput{query.data(), FloatStorageType::kF32,
+                                        static_cast<long long>(query.size())},
+                      key_codes.data(), key_scales.data(), value_codes.data(),
+                      value_scales.data(), attention_blocks, context_lens,
+                      FloatStorageOutput{storage_attention.data(),
+                                         FloatStorageType::kF32,
+                                         static_cast<long long>(
+                                             storage_attention.size())},
+                      kBlocks, kBatch, kQueryHeads, kHeads, kDim, kPage, 2) ==
+                      Status::kOk,
+                  "Q8_0 FP32 storage paged attention");
+    for (std::size_t i = 0; i < storage_attention.size(); ++i) {
+      ok &= require(std::fabs(storage_attention[i] - attention_out[i]) <=
+                        2e-5f,
+                    "Q8_0 FP32 storage paged attention oracle");
     }
     const int sparse_blocks[] = {-1, -1, -1, -1};
     std::fill(attention_out.begin(), attention_out.end(), 1.0f);

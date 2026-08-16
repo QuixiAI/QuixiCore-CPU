@@ -121,6 +121,20 @@ int main() {
                     close(dequant[3], 2.0f, 0.02f),
                 "asymmetric endpoints");
 
+  const float maximum = std::numeric_limits<float>::max();
+  const float extreme[2] = {-maximum, maximum};
+  std::int8_t extreme_codes[2] = {};
+  float extreme_scale = 0.0f;
+  int extreme_zero = 0;
+  ok &= require(quantize_int8_asymmetric(
+                    extreme, extreme_codes, &extreme_scale, &extreme_zero, 1,
+                    2) == Status::kOk,
+                "asymmetric extreme finite range");
+  ok &= require(std::isfinite(extreme_scale) && extreme_scale > 0.0f,
+                "asymmetric extreme scale is finite");
+  ok &= require(extreme_codes[0] == -128 && extreme_codes[1] == 127,
+                "asymmetric extreme endpoints remain distinct");
+
   std::vector<std::uint8_t> fp8(x.size());
   ok &= require(quantize_float8(x.data(), fp8.data(), scales.data(), 2, 4, 2,
                                 Float8Format::kE4M3FN, true) == Status::kOk,

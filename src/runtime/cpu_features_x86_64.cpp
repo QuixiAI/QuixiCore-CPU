@@ -88,6 +88,9 @@ CpuFeatures detect_cpu_features() {
   const CpuidRegs leaf7 = cpuid(7, 0);
   f.avx2 = os_avx && bit(leaf7.ebx, 5);
   f.avx512f = os_avx512 && bit(leaf7.ebx, 16);
+  f.avx512dq = f.avx512f && bit(leaf7.ebx, 17);
+  f.avx512bw = f.avx512f && bit(leaf7.ebx, 30);
+  f.avx512vl = f.avx512f && bit(leaf7.ebx, 31);
   f.avx512_vnni = f.avx512f && bit(leaf7.ecx, 11);
 
   // AMX here means CPUID + XSAVE support. On Linux a process must still

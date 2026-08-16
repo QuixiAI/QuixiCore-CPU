@@ -156,7 +156,10 @@ long long row_tile(CpuPanelLayout layout) {
 
 CpuPanelLayout automatic_layout() {
   const CpuFeatures& features = cpu_features();
-  if (features.avx512f) return CpuPanelLayout::kAvx512Rows16;
+  if (features.avx512f && features.avx512bw && features.avx512vl &&
+      features.avx512dq) {
+    return CpuPanelLayout::kAvx512Rows16;
+  }
   if (features.avx2) return CpuPanelLayout::kAvx2Rows8;
   if (features.neon) return CpuPanelLayout::kNeonRows4;
   return CpuPanelLayout::kPortableRows1;
